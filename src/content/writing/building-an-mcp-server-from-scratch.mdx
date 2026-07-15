@@ -1,0 +1,69 @@
+---
+title: Building an MCP server from scratch
+description: What the Model Context Protocol actually is, the three primitives that matter, and how to expose real tools to an LLM without hand-rolling an orchestration loop.
+date: 2026-06-20
+tags: ['ai', 'mcp', 'agents']
+---
+
+The **Model Context Protocol** (MCP) is the least glamorous and most useful piece of the agent stack right now. It's the thing that lets a model actually *do* something (read a file, hit an API, call your service) through a standard interface instead of a pile of bespoke glue.
+
+I've now built MCP servers twice in production, and the mental model is simpler than the acronym suggests.
+
+## Host, client, server
+
+There are three roles:
+
+- **Host:** the AI app (Claude Desktop, Cursor, your own agent).
+- **Client:** a 1:1 connection the host opens *to* a server.
+- **Server:** the integration you write. This is your job.
+
+A server exposes three primitives, and getting the distinction right is most of the design work:
+
+1. **Tools:** model-controlled *actions* (`send_email`, `query_db`). The model decides when to call them.
+2. **Resources:** application-controlled *data* addressed by URI (`file://…`, `db://orders/42`). Read-only context.
+3. **Prompts:** reusable, parameterised templates the user invokes.
+
+> The trap is shipping everything as a tool. If it's data the app should attach, it's a resource. If it's an action the model should choose, it's a tool.
+
+## A minimal server
+
+With `fastmcp` (Python), a working server is almost entirely decorators:
+
+```python
+from fastmcp import FastMCP
+
+mcp = FastMCP("orders")
+
+@mcp.tool
+def refund(order_id: str, amount_cents: int) -> str:
+    """Issue a refund for an order. Amounts are in cents."""
+    # ... call your real payments service here ...
+    return f"refunded {amount_cents}c on {order_id}"
+
+@mcp.resource("orders://{order_id}")
+def order(order_id: str) -> str:
+    """Read-only order context the app can attach."""
+    return load_order(order_id).as_markdown()
+
+if __name__ == "__main__":
+    mcp.run(transport="stdio")
+```
+
+The docstrings and type hints *are* the schema: they become the tool description and the input contract the model sees. Spend real effort here; a vague docstring is a mis-called tool.
+
+## Transports, and the one deprecation to know
+
+Two transports matter in 2026:
+
+- **stdio:** the server runs as a local subprocess. This is what Claude Desktop / Cursor / VS Code use.
+- **Streamable HTTP:** the current remote transport. One `/mcp` endpoint, scalable, works serverless.
+
+The thing people get wrong: the old **HTTP+SSE** transport is **deprecated** (as of the 2025-03-26 spec) in favour of Streamable HTTP. If a tutorial tells you to stand up an SSE endpoint, it's out of date.
+
+## Serverless vs long-running
+
+For remote servers you have a real architectural choice. A long-running HTTP service keeps state and warm connections; a serverless deployment (Workers / Lambda / Cloud Run) pairs naturally with *stateless* Streamable HTTP and scales to zero. I've shipped both, and the deciding factor was almost always whether a given integration needed to hold a session.
+
+---
+
+That's the whole shape of it. The protocol is small on purpose; the craft is in choosing primitives well and writing schemas a model can't misread. I'll go deeper on auth (OAuth 2.1, scopes) and testing in-memory clients in a follow-up.
