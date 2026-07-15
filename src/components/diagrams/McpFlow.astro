@@ -1,0 +1,33 @@
+---
+// Host -> Client -> Server -> external world.
+---
+<svg class="dgm" viewBox="0 0 680 210" role="img" aria-label="MCP architecture: a host contains a client, which connects over MCP to a server you build, which reaches the external world.">
+  <defs>
+    <marker id="mcp-ah" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" class="dgm-arrow" />
+    </marker>
+  </defs>
+
+  <!-- Host container -->
+  <rect x="14" y="40" width="214" height="140" rx="10" class="dgm-box" />
+  <text x="32" y="66" class="dgm-title">Host</text>
+  <text x="32" y="84" class="dgm-sub">the AI app</text>
+  <!-- Client inside host -->
+  <rect x="38" y="104" width="166" height="56" rx="7" class="dgm-box dgm-box--accent" />
+  <text x="121" y="137" text-anchor="middle" class="dgm-label">Client</text>
+
+  <!-- Server -->
+  <rect x="320" y="88" width="158" height="76" rx="8" class="dgm-box" />
+  <text x="399" y="122" text-anchor="middle" class="dgm-label">Server</text>
+  <text x="399" y="142" text-anchor="middle" class="dgm-sub">you build this</text>
+
+  <!-- External -->
+  <rect x="522" y="88" width="144" height="76" rx="8" class="dgm-box dgm-box--dashed" />
+  <text x="594" y="122" text-anchor="middle" class="dgm-label">APIs · DB</text>
+  <text x="594" y="142" text-anchor="middle" class="dgm-sub">files</text>
+
+  <!-- Arrows -->
+  <line x1="206" y1="132" x2="316" y2="126" class="dgm-line dgm-line--accent" marker-end="url(#mcp-ah)" />
+  <text x="260" y="116" text-anchor="middle" class="dgm-sub dgm-sub--accent">MCP</text>
+  <line x1="480" y1="126" x2="518" y2="126" class="dgm-line" marker-end="url(#mcp-ah)" />
+</svg>

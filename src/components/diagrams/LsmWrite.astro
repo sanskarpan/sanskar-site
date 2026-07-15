@@ -1,0 +1,37 @@
+---
+// LSM write path: every write appends to the WAL and the sorted memtable;
+// a full memtable is flushed sequentially to an immutable SSTable.
+---
+<svg class="dgm" viewBox="0 0 680 210" role="img" aria-label="LSM write path: a write appends to the write-ahead log and the in-memory memtable; when the memtable fills, it is flushed to an immutable SSTable on disk.">
+  <defs>
+    <marker id="lw-ah" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" class="dgm-arrow" />
+    </marker>
+  </defs>
+
+  <rect x="14" y="82" width="126" height="48" rx="8" class="dgm-box" />
+  <text x="77" y="111" text-anchor="middle" class="dgm-label">write(k, v)</text>
+
+  <!-- forks -->
+  <line x1="140" y1="98" x2="210" y2="64" class="dgm-line" marker-end="url(#lw-ah)" />
+  <line x1="140" y1="114" x2="210" y2="156" class="dgm-line" marker-end="url(#lw-ah)" />
+
+  <!-- WAL -->
+  <rect x="212" y="36" width="184" height="56" rx="8" class="dgm-box" />
+  <text x="234" y="64" class="dgm-title">WAL</text>
+  <text x="234" y="82" class="dgm-sub">append · durability</text>
+
+  <!-- Memtable -->
+  <rect x="212" y="128" width="184" height="56" rx="8" class="dgm-box dgm-box--accent" />
+  <text x="234" y="156" class="dgm-title">Memtable</text>
+  <text x="234" y="174" class="dgm-sub">sorted · in-memory</text>
+
+  <!-- flush -->
+  <line x1="396" y1="156" x2="476" y2="156" class="dgm-line dgm-line--accent" marker-end="url(#lw-ah)" />
+  <text x="436" y="146" text-anchor="middle" class="dgm-sub dgm-sub--accent">flush</text>
+
+  <!-- SSTable -->
+  <rect x="478" y="128" width="188" height="56" rx="8" class="dgm-box" />
+  <text x="500" y="156" class="dgm-title">SSTable</text>
+  <text x="500" y="174" class="dgm-sub">immutable · on disk</text>
+</svg>
