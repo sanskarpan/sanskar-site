@@ -24,5 +24,19 @@ const { title, description, image, type } = Astro.props;
       <slot />
     </main>
     <Footer />
+
+    <!-- External links open in a new tab; internal navigation stays in place. -->
+    <script is:inline>
+      (function () {
+        var here = location.hostname;
+        document.querySelectorAll('a[href]').forEach(function (a) {
+          var href = a.getAttribute('href') || '';
+          if (/^https?:\/\//i.test(href) && a.hostname !== here) {
+            a.target = '_blank';
+            a.rel = 'noopener noreferrer';
+          }
+        });
+      })();
+    </script>
   </body>
 </html>
