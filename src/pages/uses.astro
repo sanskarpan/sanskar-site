@@ -1,0 +1,35 @@
+---
+import Base from '../layouts/Base.astro';
+
+// TODO(sanskar): make this actually yours; it's a plausible starting point.
+const GROUPS = [
+  { label: 'Editor & terminal', items: ['Neovim / VS Code', 'Ghostty + tmux', 'zsh + starship', 'Claude Code'] },
+  { label: 'Languages', items: ['Go · systems & services', 'Python · AI/backend', 'TypeScript · web', 'a little Rust'] },
+  { label: 'Stack I reach for', items: ['FastAPI · Celery', 'PostgreSQL · Redis · Kafka', 'Next.js · Astro', 'Docker · Kubernetes'] },
+  { label: 'AI', items: ['LiteLLM gateway', 'MCP / FastMCP', 'PromptLine (evals)', 'OpenAI · Anthropic · open models'] },
+  { label: 'Machine', items: ['MacBook Pro (Apple silicon)', 'External monitor', 'Mechanical keyboard'] },
+];
+---
+
+<Base title="Uses" description="The tools, languages, and stack I actually reach for.">
+  <div class="wrap">
+    <section class="hero" style="padding-block: 3.5rem 1rem;">
+      <p class="label hero__eyebrow rise rise-1">/uses</p>
+      <h1 class="rise rise-2">What I use</h1>
+      <p class="hero__lede rise rise-3" style="margin-top:1rem;">
+        The tools behind the work. Updated when it actually changes.
+      </p>
+    </section>
+
+    <section class="section rise rise-4" style="border-top:0; padding-top:0.5rem;">
+      {GROUPS.map((g) => (
+        <div style="padding: 1.1rem 0; border-bottom: 1px dashed var(--line); display:grid; grid-template-columns: 12rem 1fr; gap: 0.5rem 1.5rem;">
+          <span class="label" style="align-self:start; padding-top:0.2rem;">{g.label}</span>
+          <ul style="list-style:none; padding:0; display:flex; flex-wrap:wrap; gap:0.4rem 1.2rem;">
+            {g.items.map((it) => <li class="mono" style="font-size:0.9rem; color:var(--ink-2);">{it}</li>)}
+          </ul>
+        </div>
+      ))}
+    </section>
+  </div>
+</Base>
