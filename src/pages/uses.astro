@@ -23,10 +23,10 @@ const GROUPS = [
 
     <section class="section rise rise-4" style="border-top:0; padding-top:0.5rem;">
       {GROUPS.map((g) => (
-        <div style="padding: 1.1rem 0; border-bottom: 1px dashed var(--line); display:grid; grid-template-columns: 12rem 1fr; gap: 0.5rem 1.5rem;">
-          <span class="label" style="align-self:start; padding-top:0.2rem;">{g.label}</span>
-          <ul style="list-style:none; padding:0; display:flex; flex-wrap:wrap; gap:0.4rem 1.2rem;">
-            {g.items.map((it) => <li class="mono" style="font-size:0.9rem; color:var(--ink-2);">{it}</li>)}
+        <div class="uses-row">
+          <span class="label">{g.label}</span>
+          <ul class="uses-items">
+            {g.items.map((it) => <li>{it}</li>)}
           </ul>
         </div>
       ))}
