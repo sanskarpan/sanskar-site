@@ -1,0 +1,55 @@
+---
+import Base from '../layouts/Base.astro';
+---
+
+<Base title="About" description="Sanskar Pandey, founding engineer working across systems and AI.">
+  <div class="wrap">
+    <article style="max-width: 46rem;">
+      <section class="hero" style="padding-block: 3.5rem 1rem;">
+        <p class="label hero__eyebrow rise rise-1">About</p>
+        <h1 class="rise rise-2">Hi, I&rsquo;m Sanskar.</h1>
+      </section>
+
+      <div class="prose rise rise-3" style="max-width: 42rem;">
+        {/* TODO(sanskar): make this yours. This is a factual draft from your resume. */}
+        <p class="big-lede">
+          I&rsquo;m a founding engineer who likes the hard middle of the stack:
+          storage engines, LLM infrastructure, agents, and the reliability work
+          that decides whether any of it survives production.
+        </p>
+
+        <p>
+          Right now I&rsquo;m a founding engineer at <strong>NoClick</strong>, building an
+          AI-native automation platform: an 80+ connector framework, an MCP server,
+          multi-language SDKs, and a multi-provider LLM gateway. Alongside that I lead
+          engineering at <strong>Camarin AI</strong>, where I&rsquo;ve shipped real-time voice
+          and generative-AI systems, agentic backends, and payments infrastructure.
+        </p>
+
+        <p>
+          Before that I&rsquo;ve worked across full-stack and AI roles, and I spend a lot
+          of my own time building systems from scratch to actually understand them:
+          <a href="https://github.com/sanskarpan">B+Tree and LSM-tree storage engines</a>,
+          a Raft implementation, a distributed tracing backend, an LLM-evaluation
+          pipeline, and an agent-orchestration runtime, mostly in Go and Python.
+        </p>
+
+        <p>
+          I care about first-principles understanding, evergreen writing over hot takes,
+          and building things that hold up. This site is where I keep the notes.
+        </p>
+
+        <h2>Elsewhere</h2>
+        <ul>
+          <li><a href="https://github.com/sanskarpan">GitHub</a>, the source of most of the above</li>
+          <li><a href="https://linkedin.com/in/sanskarpandey2004">LinkedIn</a></li>
+          <li><a href="mailto:sanskar.works.2004@gmail.com">Email</a>, the best way to reach me</li>
+        </ul>
+
+        <p class="muted" style="font-size:0.9rem;">
+          Want the short version? <a href="/uses">What I use</a> &middot; <a href="/now">what I&rsquo;m doing now</a>.
+        </p>
+      </div>
+    </article>
+  </div>
+</Base>
