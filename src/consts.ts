@@ -7,7 +7,7 @@ export const SITE = {
   description:
     'Founding engineer building systems and AI. Notes on storage engines, LLM infrastructure, agents, and shipping things that hold up in production.',
   tagline: 'Founding engineer. Systems & AI.',
-  url: 'https://sanskarpandey.dev', // TODO: your real domain
+  url: 'https://sanskarpan.sanskarpandey2004.workers.dev', // TODO: your real domain
   locale: 'en',
   author: 'Sanskar Pandey',
 };

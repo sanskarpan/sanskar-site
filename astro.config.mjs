@@ -4,7 +4,7 @@ import mdx from '@astrojs/mdx';
 import sitemap from '@astrojs/sitemap';
 
 // TODO: change this to your real domain once you own it.
-const SITE = 'https://sanskarpandey.dev';
+const SITE = 'https://sanskarpan.sanskarpandey2004.workers.dev';
 
 // https://astro.build/config
 export default defineConfig({
