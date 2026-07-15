@@ -1,0 +1,21 @@
+# build output
+dist/
+.output/
+
+# dependencies
+node_modules/
+
+# astro
+.astro/
+
+# generated search index
+public/pagefind/
+
+# env
+.env
+.env.production
+
+# macOS / editors
+.DS_Store
+*.log
+.vscode/
