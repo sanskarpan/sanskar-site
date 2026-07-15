@@ -1,0 +1,31 @@
+---
+import Base from '../layouts/Base.astro';
+import { formatDate } from '../utils';
+
+// TODO(sanskar): update this whenever your focus shifts. Bump the date.
+const UPDATED = new Date('2026-07-15');
+---
+
+<Base title="Now" description="What Sanskar is focused on right now.">
+  <div class="wrap">
+    <article style="max-width: 46rem;">
+      <section class="hero" style="padding-block: 3.5rem 1rem;">
+        <p class="label hero__eyebrow rise rise-1">/now</p>
+        <h1 class="rise rise-2">Right now</h1>
+      </section>
+
+      <div class="prose rise rise-3" style="max-width: 42rem;">
+        <p class="muted mono" style="font-size:0.78rem;">Last updated {formatDate(UPDATED)}</p>
+        <ul>
+          <li>Building agent &amp; connector infrastructure at <strong>NoClick</strong>.</li>
+          <li>Leading full-stack &amp; AI at <strong>Camarin AI</strong>.</li>
+          <li>Shipping open source: <a href="https://github.com/sanskarpan/promptline">PromptLine</a> (LLM evals) and TAG (agent runtime).</li>
+          <li>Writing more: turning the storage-engine and LLM-infra work into proper explainers.</li>
+        </ul>
+        <p class="muted" style="font-size:0.85rem;">
+          This is a <a href="https://nownownow.com/about">/now page</a>, a snapshot, not a résumé.
+        </p>
+      </div>
+    </article>
+  </div>
+</Base>
