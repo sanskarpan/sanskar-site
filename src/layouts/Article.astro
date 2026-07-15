@@ -29,10 +29,9 @@ const toc = headings.filter((h) => h.depth === 2 || h.depth === 3);
     <!-- LEFT rail: utilities -->
     <aside class="article-rail article-rail--left">
       <div class="railbox">
-        <a href={backHref} class="rail-link">&larr; {backLabel}</a>
         <button type="button" class="rail-link" id="copy-link">&#9106; copy link</button>
         <button type="button" class="rail-link" id="to-top" hidden>&uarr; top</button>
-        {minutes && <span class="rail-meta">{minutes} min</span>}
+        {minutes && <span class="rail-meta">{minutes} min read</span>}
       </div>
     </aside>
 
