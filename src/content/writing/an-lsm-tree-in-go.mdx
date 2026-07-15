@@ -1,0 +1,63 @@
+---
+title: Writing an LSM-tree in Go
+description: Why write-heavy databases turn random writes into sequential ones, plus memtables, SSTables, Bloom filters, and the compaction trade-off, built from scratch to actually understand it.
+date: 2026-05-11
+tags: ['go', 'storage', 'systems']
+---
+
+Most databases you reach for to handle a firehose of writes (Cassandra, RocksDB, LevelDB, ScyllaDB) are **LSM-trees** underneath. I built one from scratch in Go because reading about compaction and *implementing* compaction are very different amounts of understanding.
+
+Here's the core idea, and the trade-off it's built around.
+
+## The trick: never write randomly
+
+Disks (and SSDs) hate random writes. A B-tree updates data in place, which means seeking all over the file. An **LSM-tree** refuses to do that. Every write is:
+
+1. appended to a **write-ahead log** (durability), and
+2. inserted into an in-memory sorted structure, the **memtable**.
+
+Both are cheap. When the memtable fills up, it's flushed to disk **sequentially** as an immutable **SSTable** (sorted string table). You never modify an SSTable; you only ever write new ones.
+
+```go
+func (t *Tree) Put(key, val []byte) error {
+    if err := t.wal.Append(key, val); err != nil { // durability first
+        return err
+    }
+    t.mem.Insert(key, val)                          // sorted in-memory
+    if t.mem.Size() >= t.threshold {
+        t.flush()                                   // -> new SSTable on disk
+    }
+    return nil
+}
+```
+
+Writes are now sequential and fast. But we've pushed the cost somewhere: **reads**.
+
+## Reads pay the bill
+
+A key might be in the memtable, or in *any* of the SSTables on disk, newest first. A naive read checks all of them. That's a lot of disk I/O, and two structures rescue it:
+
+- **Bloom filters:** a tiny probabilistic set per SSTable. Ask "might this key be here?" and get back *definitely not* or *maybe*. Most SSTables answer *definitely not* in memory, so you never touch their disk blocks.
+- **Sparse block index:** SSTables are stored as sorted, prefix-compressed blocks; a small in-memory index jumps you to the right block.
+
+> A Bloom filter can say "maybe" when the answer is "no" (a false positive), but it never says "no" when the answer is "yes." That asymmetry is exactly what a read path wants.
+
+## Compaction: the real trade-off
+
+SSTables pile up. Old versions of keys and tombstones (deletes) accumulate. **Compaction** merges SSTables in the background, dropping shadowed values, reclaiming space and keeping reads fast.
+
+The strategy you pick *is* the write-vs-read-vs-space trade-off:
+
+| Strategy | Optimises for | Cost |
+| --- | --- | --- |
+| **Leveled** | reads + space | higher write amplification |
+| **Size-tiered** | writes | more space, worse reads |
+| **Time-window** | time-series | assumes append-mostly data |
+
+I made all three live-switchable, which turned an abstract table like the one above into something I could actually *feel* by watching write amplification move.
+
+## Where it got interesting
+
+The single-node engine was the warm-up. Adding **Raft** for quorum replication, and then multi-Raft to shard the keyspace across groups, is where "I read about this" became "I understand this." Consensus has a way of punishing every fuzzy assumption you made about ordering and failure.
+
+The [full engine is on GitHub](https://github.com/sanskarpan/lsm-tree-storage). Next time I'll write up the WAL format and crash-recovery path, which is where the real correctness lives.
