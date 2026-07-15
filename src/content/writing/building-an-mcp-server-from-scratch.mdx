@@ -5,19 +5,33 @@ date: 2026-06-20
 tags: ['ai', 'mcp', 'agents']
 ---
 
+import Figure from '../../components/diagrams/Figure.astro';
+import McpFlow from '../../components/diagrams/McpFlow.astro';
+import McpPrimitives from '../../components/diagrams/McpPrimitives.astro';
+
 The **Model Context Protocol** (MCP) is the least glamorous and most useful piece of the agent stack right now. It's the thing that lets a model actually *do* something (read a file, hit an API, call your service) through a standard interface instead of a pile of bespoke glue.
 
 I've now built MCP servers twice in production, and the mental model is simpler than the acronym suggests.
 
 ## Host, client, server
 
-There are three roles:
+There are three roles, and the shape is always the same: the **host** is the app the user talks to, it opens a **client** connection per integration, and that client talks to the **server** you write. Your server is the only part that touches the outside world.
+
+<Figure label="Fig 1" caption="One host opens a client per server. Your server is the bridge to the outside world.">
+  <McpFlow />
+</Figure>
 
 - **Host:** the AI app (Claude Desktop, Cursor, your own agent).
 - **Client:** a 1:1 connection the host opens *to* a server.
 - **Server:** the integration you write. This is your job.
 
-A server exposes three primitives, and getting the distinction right is most of the design work:
+## The three primitives
+
+A server exposes three primitives, and getting the distinction right is most of the design work. The key question for each is *who decides when it's used*.
+
+<Figure label="Fig 2" caption="Tools, resources, and prompts differ mainly in who is in control of them.">
+  <McpPrimitives />
+</Figure>
 
 1. **Tools:** model-controlled *actions* (`send_email`, `query_db`). The model decides when to call them.
 2. **Resources:** application-controlled *data* addressed by URI (`file://…`, `db://orders/42`). Read-only context.
@@ -60,10 +74,29 @@ Two transports matter in 2026:
 
 The thing people get wrong: the old **HTTP+SSE** transport is **deprecated** (as of the 2025-03-26 spec) in favour of Streamable HTTP. If a tutorial tells you to stand up an SSE endpoint, it's out of date.
 
+## Auth, briefly
+
+Local stdio servers inherit the user's machine, so auth is rarely the problem. Remote servers are where it bites. FastMCP 2.x supports **OAuth 2.1** with dynamic client registration and an OAuth proxy for GitHub / Google / Azure, plus plain bearer tokens for service-to-service. The rule that saves you: **scope tools to the narrowest permission that works**, and never let a single misconfigured server hold broad write access across a whole account.
+
+## Testing without a model
+
+You don't need an LLM in the loop to test an MCP server, and you shouldn't. FastMCP ships an **in-memory client** so you can call your tools directly in a normal test:
+
+```python
+from fastmcp import Client
+
+async def test_refund():
+    async with Client(mcp) as client:
+        result = await client.call_tool("refund", {"order_id": "A1", "amount_cents": 500})
+        assert "refunded" in result.data
+```
+
+That turns "is my agent behaving?" (slow, non-deterministic) into "is my tool correct?" (fast, deterministic). Keep the two concerns separate.
+
 ## Serverless vs long-running
 
 For remote servers you have a real architectural choice. A long-running HTTP service keeps state and warm connections; a serverless deployment (Workers / Lambda / Cloud Run) pairs naturally with *stateless* Streamable HTTP and scales to zero. I've shipped both, and the deciding factor was almost always whether a given integration needed to hold a session.
 
 ---
 
-That's the whole shape of it. The protocol is small on purpose; the craft is in choosing primitives well and writing schemas a model can't misread. I'll go deeper on auth (OAuth 2.1, scopes) and testing in-memory clients in a follow-up.
+That's the whole shape of it. The protocol is small on purpose; the craft is in choosing primitives well and writing schemas a model can't misread. Next I'll write up wiring multiple servers behind one agent, and where multi-server tool-naming starts to hurt.
