@@ -2,6 +2,7 @@
 import Base from './Base.astro';
 import { formatDate } from '../utils';
 
+interface Heading { depth: number; slug: string; text: string; }
 interface Props {
   title: string;
   description: string;
@@ -11,32 +12,111 @@ interface Props {
   minutes?: number;
   backHref?: string;
   backLabel?: string;
+  headings?: Heading[];
 }
 const {
   title, description, date, updated, tags = [], minutes,
-  backHref = '/writing', backLabel = 'writing',
+  backHref = '/writing', backLabel = 'writing', headings = [],
 } = Astro.props;
+
+const toc = headings.filter((h) => h.depth === 2 || h.depth === 3);
 ---
 
 <Base title={title} description={description} type="article">
-  <article class="wrap" style="max-width: 46rem;">
-    <header class="article__head rise rise-1">
-      <a href={backHref} class="backlink">← {backLabel}</a>
-      <h1>{title}</h1>
-      <p class="article__desc">{description}</p>
-      <div class="article__meta">
-        <time datetime={date.toISOString()}>{formatDate(date)}</time>
-        {minutes && <><span class="dot">·</span><span>{minutes} min read</span></>}
-        {updated && <><span class="dot">·</span><span>updated {formatDate(updated)}</span></>}
-        {tags.map((t) => <span class="tag">{t}</span>)}
+  <div class="reading-progress" aria-hidden="true"><div class="reading-progress__fill" id="reading-progress"></div></div>
+
+  <div class="article-shell">
+    <!-- LEFT rail: utilities -->
+    <aside class="article-rail article-rail--left">
+      <div class="railbox">
+        <a href={backHref} class="rail-link">&larr; {backLabel}</a>
+        <button type="button" class="rail-link" id="copy-link">&#9106; copy link</button>
+        <button type="button" class="rail-link" id="to-top" hidden>&uarr; top</button>
+        {minutes && <span class="rail-meta">{minutes} min</span>}
       </div>
-    </header>
+    </aside>
 
-    <div class="prose rise rise-2">
-      <slot />
-    </div>
+    <!-- MAIN -->
+    <article class="article-main">
+      <header class="article__head rise rise-1">
+        <a href={backHref} class="backlink">&larr; {backLabel}</a>
+        <h1>{title}</h1>
+        <p class="article__desc">{description}</p>
+        <div class="article__meta">
+          <time datetime={date.toISOString()}>{formatDate(date)}</time>
+          {minutes && <><span class="dot">&middot;</span><span>{minutes} min read</span></>}
+          {updated && <><span class="dot">&middot;</span><span>updated {formatDate(updated)}</span></>}
+          {tags.map((t) => <span class="tag">{t}</span>)}
+        </div>
+      </header>
 
-    <hr style="border:0; border-top:1px solid var(--line); margin: 3rem 0 1.5rem;" />
-    <a href={backHref} class="backlink">← back to {backLabel}</a>
-  </article>
+      <div class="prose rise rise-2">
+        <slot />
+      </div>
+
+      <hr style="border:0; border-top:1px solid var(--line); margin: 3rem 0 1.5rem;" />
+      <a href={backHref} class="backlink">&larr; back to {backLabel}</a>
+    </article>
+
+    <!-- RIGHT rail: table of contents -->
+    <aside class="article-rail article-rail--right">
+      {toc.length > 0 && (
+        <nav class="toc" aria-label="On this page">
+          <p class="label toc__label">On this page</p>
+          <ul class="toc__list">
+            {toc.map((h) => (
+              <li>
+                <a href={`#${h.slug}`} class={`toc__link${h.depth === 3 ? ' toc__link--h3' : ''}`} data-toc={h.slug}>{h.text}</a>
+              </li>
+            ))}
+          </ul>
+        </nav>
+      )}
+    </aside>
+  </div>
+
+  <script is:inline>
+    (function () {
+      var root = document.documentElement;
+      var bar = document.getElementById('reading-progress');
+      var top = document.getElementById('to-top');
+
+      function onScroll() {
+        var max = root.scrollHeight - root.clientHeight;
+        var p = max > 0 ? root.scrollTop / max : 0;
+        if (bar) bar.style.width = (p * 100).toFixed(1) + '%';
+        if (top) { if (root.scrollTop > 700) top.removeAttribute('hidden'); else top.setAttribute('hidden', ''); }
+      }
+      document.addEventListener('scroll', onScroll, { passive: true });
+      onScroll();
+
+      if (top) top.addEventListener('click', function () { window.scrollTo({ top: 0, behavior: 'smooth' }); });
+
+      var copy = document.getElementById('copy-link');
+      if (copy) copy.addEventListener('click', function () {
+        var restore = copy.textContent;
+        if (navigator.clipboard) navigator.clipboard.writeText(location.href);
+        copy.textContent = '✓ copied';
+        setTimeout(function () { copy.textContent = restore; }, 1400);
+      });
+
+      // scroll-spy for the table of contents
+      var links = Array.prototype.slice.call(document.querySelectorAll('[data-toc]'));
+      if (links.length && 'IntersectionObserver' in window) {
+        var byId = {};
+        links.forEach(function (l) { byId[l.getAttribute('data-toc')] = l; });
+        var heads = links.map(function (l) { return document.getElementById(l.getAttribute('data-toc')); }).filter(Boolean);
+        var io = new IntersectionObserver(function (entries) {
+          entries.forEach(function (e) {
+            if (e.isIntersecting) {
+              links.forEach(function (l) { l.classList.remove('is-active'); });
+              var a = byId[e.target.id];
+              if (a) a.classList.add('is-active');
+            }
+          });
+        }, { rootMargin: '0px 0px -72% 0px', threshold: 0 });
+        heads.forEach(function (h) { io.observe(h); });
+      }
+    })();
+  </script>
 </Base>

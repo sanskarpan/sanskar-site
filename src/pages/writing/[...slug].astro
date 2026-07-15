@@ -12,7 +12,7 @@ export async function getStaticPaths() {
 }
 
 const { post } = Astro.props;
-const { Content } = await render(post);
+const { Content, headings } = await render(post);
 const minutes = readingMinutes(post.body ?? '');
 ---
 
@@ -23,6 +23,7 @@ const minutes = readingMinutes(post.body ?? '');
   updated={post.data.updated}
   tags={post.data.tags}
   minutes={minutes}
+  headings={headings}
   backHref="/writing"
   backLabel="writing"
 >
