@@ -22,7 +22,7 @@ const posts = (await getCollection('writing', ({ data }) => !data.draft))
       <ul class="entries">
         {posts.map((p, i) => (
           <li class="entry">
-            <span class="entry__no">{pad(posts.length - i)}</span>
+            <span class="entry__no">{pad(i + 1)}</span>
             <a href={`/writing/${p.id}/`} class="entry__title">{p.data.title}</a>
             <div class="entry__meta">
               <time datetime={p.data.date.toISOString()}>{formatDate(p.data.date)}</time>
