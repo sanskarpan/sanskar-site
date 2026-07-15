@@ -1,0 +1,23 @@
+---
+import { SITE, SOCIALS } from '../consts';
+const year = new Date().getFullYear();
+---
+
+<footer class="colophon">
+  <div class="wrap">
+    <span class="label">Colophon</span>
+    <div class="colophon__grid">
+      <div style="max-width: 34ch;">
+        <p>
+          Set in Instrument Serif, Newsreader &amp; JetBrains Mono. Built with Astro,
+          written in Markdown, served from the edge. Source on
+          <a href="https://github.com/sanskarpan">GitHub</a>.
+        </p>
+        <p style="margin-top:0.6rem;">&copy; {year} {SITE.name}</p>
+      </div>
+      <nav class="colophon__socials" aria-label="Elsewhere">
+        {SOCIALS.map((s) => <a href={s.href}>{s.label} ↗</a>)}
+      </nav>
+    </div>
+  </div>
+</footer>
