@@ -1,0 +1,98 @@
+---
+import Base from '../layouts/Base.astro';
+import { getCollection } from 'astro:content';
+import { PROJECTS } from '../data/projects';
+import { formatDate, pad } from '../utils';
+import { SITE } from '../consts';
+
+const posts = (await getCollection('writing', ({ data }) => !data.draft))
+  .sort((a, b) => b.data.date.valueOf() - a.data.date.valueOf())
+  .slice(0, 4);
+
+const featured = PROJECTS.filter((p) => p.featured).slice(0, 4);
+
+// Current work. Edit freely.
+const WORK = [
+  { role: 'Founding Engineer', org: 'NoClick', when: 'since 2025', note: 'AI-native automation platform: agent infra, an 80+ connector framework, LLM gateway.' },
+  { role: 'Team Lead, Full-Stack & AI', org: 'Camarin AI', when: 'since 2024', note: 'Voice & generative-AI systems, agentic backends, payments infra.' },
+];
+---
+
+<Base>
+  <div class="wrap">
+    <!-- HERO -->
+    <section class="hero">
+      <p class="label hero__eyebrow rise rise-1">{SITE.tagline}</p>
+      <h1 class="rise rise-2">
+        I build systems that <em>hold up</em>, and write about how.
+      </h1>
+      <p class="hero__lede rise rise-3">
+        I&rsquo;m Sanskar, a founding engineer working across storage engines, LLM
+        infrastructure, and agents. This is my notebook: <a href="/writing">long-form writing</a>,
+        the <a href="/projects">things I&rsquo;ve built</a>, and <a href="/notes">rougher notes</a> in the margins.
+      </p>
+      <div class="btnrow rise rise-4">
+        <a class="btn btn--accent" href="/writing">Read the writing →</a>
+        <a class="btn" href="https://github.com/sanskarpan">GitHub ↗</a>
+      </div>
+    </section>
+
+    <!-- CURRENTLY -->
+    <section class="section rise rise-5">
+      <div class="section__head"><span class="label">Currently</span></div>
+      <ul class="entries" style="border-top:0;">
+        {WORK.map((w) => (
+          <li class="entry" style="grid-template-columns: 8rem 1fr;">
+            <span class="entry__no" style="letter-spacing:0.04em;">{w.when}</span>
+            <div>
+              <span class="entry__title" style="font-size:1.35rem;">{w.role} <span class="muted" style="font-style:italic;">· {w.org}</span></span>
+              <p class="entry__desc" style="grid-column:1; margin-top:0.3rem;">{w.note}</p>
+            </div>
+          </li>
+        ))}
+      </ul>
+    </section>
+
+    <!-- WRITING -->
+    <section class="section">
+      <div class="section__head">
+        <span class="label">Selected writing</span>
+        <a class="more" href="/writing">all writing →</a>
+      </div>
+      <ul class="entries">
+        {posts.map((p, i) => (
+          <li class="entry">
+            <span class="entry__no">{pad(i + 1)}</span>
+            <a href={`/writing/${p.id}/`} class="entry__title">{p.data.title}</a>
+            <div class="entry__meta">
+              <time datetime={p.data.date.toISOString()}>{formatDate(p.data.date)}</time>
+              {p.data.tags.slice(0, 2).map((t) => <span class="tag">{t}</span>)}
+            </div>
+            <p class="entry__desc">{p.data.description}</p>
+          </li>
+        ))}
+        {posts.length === 0 && <li class="muted" style="padding:1rem 0;">First post coming soon.</li>}
+      </ul>
+    </section>
+
+    <!-- PROJECTS -->
+    <section class="section">
+      <div class="section__head">
+        <span class="label">Selected work</span>
+        <a class="more" href="/projects">all projects →</a>
+      </div>
+      <div class="cards">
+        {featured.map((p) => (
+          <a class="card" href={p.href} rel="noopener">
+            <div class="card__top">
+              <span class="card__name">{p.name}</span>
+              {p.badge && <span class="card__badge">{p.badge}</span>}
+            </div>
+            <p class="card__desc">{p.blurb}</p>
+            <span class="card__stack">{p.stack}</span>
+          </a>
+        ))}
+      </div>
+    </section>
+  </div>
+</Base>
