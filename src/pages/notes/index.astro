@@ -1,0 +1,42 @@
+---
+import Base from '../../layouts/Base.astro';
+import { getCollection } from 'astro:content';
+import { formatDate } from '../../utils';
+
+const notes = (await getCollection('notes'))
+  .sort((a, b) => b.data.date.valueOf() - a.data.date.valueOf());
+
+const STAGE_LABEL: Record<string, string> = { seed: 'seed', sapling: 'sapling', evergreen: 'evergreen' };
+---
+
+<Base title="Notes" description="The margins: rougher, evolving notes. Planted early, tended over time.">
+  <div class="wrap">
+    <section class="hero" style="padding-block: 3.5rem 1rem;">
+      <p class="label hero__eyebrow rise rise-1">The margins</p>
+      <h1 class="rise rise-2">Notes</h1>
+      <p class="hero__lede rise rise-3" style="margin-top:1rem;">
+        Half-formed thoughts, working notes, and things I&rsquo;m still chewing on.
+        Growth stages, not polish: <span class="stage" data-stage="seed">seed</span>,
+        <span class="stage" data-stage="sapling">sapling</span>,
+        <span class="stage" data-stage="evergreen">evergreen</span>.
+      </p>
+    </section>
+
+    <section class="section rise rise-4" style="border-top:0; padding-top:0;">
+      <ul class="entries">
+        {notes.map((n) => (
+          <li class="entry">
+            <span class="entry__no stage" data-stage={n.data.stage}>{STAGE_LABEL[n.data.stage]}</span>
+            <a href={`/notes/${n.id}/`} class="entry__title">{n.data.title}</a>
+            <div class="entry__meta">
+              <time datetime={n.data.date.toISOString()}>planted {formatDate(n.data.date)}</time>
+              {n.data.tags.map((t) => <span class="tag">{t}</span>)}
+            </div>
+            {n.data.description && <p class="entry__desc">{n.data.description}</p>}
+          </li>
+        ))}
+        {notes.length === 0 && <li class="muted" style="padding:1rem 0;">Nothing planted yet.</li>}
+      </ul>
+    </section>
+  </div>
+</Base>
