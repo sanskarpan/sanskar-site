@@ -8,11 +8,11 @@ tags: ['ai', 'agents', 'harness']
 import Mermaid from '../../components/Mermaid.astro';
 import Bars from '../../components/Bars.astro';
 
-Here is a claim that took me a while to actually believe: the model is not the agent. The agent is the model plus a pile of ordinary software around it, and most of what separates a demo from something you would trust to run unattended lives in that software, not in the weights.
+The model is not the agent. The agent is the model plus the software wrapped around it, and most of what separates a slick demo from something you can leave running lives in that software, not in the weights.
 
-The community has finally given the pile a name. **Agent = Model + Harness.** The [reference framing](https://en.wikipedia.org/wiki/Agent_harness) puts it plainly: the harness is "the software infrastructure surrounding a large language model that enables it to operate as an AI agent." DJ Farrelly has the one-liner I keep coming back to: in every engineering discipline a harness is "the layer that connects, protects, and orchestrates components, without doing the work itself."
+That software finally has a name. **Agent = Model + Harness.** The [working definition](https://en.wikipedia.org/wiki/Agent_harness): the harness is "the software infrastructure surrounding a large language model that enables it to operate as an AI agent." DJ Farrelly puts it more cleanly still, as "the layer that connects, protects, and orchestrates components, without doing the work itself."
 
-I did not arrive at this from theory. I spent months building one (a control-plane CLI wrapped around an open-source agent runtime), and I work on agent infrastructure day to day. Every hard bug, every "why is it burning $40 and looping," every "the eval passed but the CLI is broken," turned out to be a harness problem, not a model problem. So this is the post I wish I had read first: what the harness is, why it matters more than it looks, and where the actual engineering is.
+I build agent infrastructure, including a control plane wrapped around an open-source runtime, and the pattern is consistent: the hard problems are almost never the model. They are routing, memory, verification, runaway cost, the eval that passes while the CLI is broken. All of it is harness. This post maps that layer, what it does, why it moves benchmarks more than people expect, and where the real engineering is.
 
 ## What the harness actually does
 
@@ -69,7 +69,7 @@ flowchart LR
 
 Three techniques do most of the work, all from Anthropic's context-engineering write-up. **Compaction**: when history gets long, summarize it, keeping the architectural decisions and open threads and discarding redundant tool output, then continue from the summary. **Just-in-time loading**: hold lightweight identifiers (paths, IDs) and pull the actual content with a tool only when you need it, treating the filesystem as external memory instead of pre-loading it. **Structured note-taking**: let the agent write durable notes outside the window and read them back later.
 
-Cognition adds a rule that cost me a real bug before I internalized it: share full traces, not stray messages, and be very careful with parallel sub-agents, because "actions carry implicit decisions, and conflicting decisions carry bad results." Two sub-agents that cannot see each other's context will make locally reasonable, globally incompatible choices, and you will spend an afternoon figuring out why the output contradicts itself.
+Cognition adds a rule that is easy to break by accident: share full traces, not stray messages, and be careful with parallel sub-agents, because "actions carry implicit decisions, and conflicting decisions carry bad results." Two sub-agents that cannot see each other's context will make locally reasonable, globally incompatible choices, and the output quietly contradicts itself.
 
 ## Tools are an interface, design them like one
 
@@ -136,4 +136,4 @@ A few of its design choices are the abstract ideas above made concrete. Sessions
 
 The uncomfortable, useful conclusion is that a large fraction of "AI engineering" is just engineering: state stores, interfaces, verification, budgets, observability, the boring durable stuff, pointed at a probabilistic component that will confidently lie to you about being finished. The model is necessary. It is nowhere near sufficient.
 
-I believe this strongly enough that I spent months building a harness to feel it, not just read about it: a control plane wrapped around one of these runtimes, with routing, layered memory, budgets, evals, traces, and a genuinely hostile testing pass that found bugs no green test suite ever would. That is the next post. This one was the map. The next one is the territory.
+Which is why I built one rather than only reading about it: a control plane wrapped around one of these runtimes, with routing, layered memory, budgets, evals, traces, and a deliberately hostile testing pass that surfaced bugs no green test suite ever would. That is the next post.
