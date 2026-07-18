@@ -1,0 +1,139 @@
+---
+title: "Harness engineering: the layer that turns a model into an agent"
+description: An LLM is a stateless next-token predictor. Everything that makes it feel like an agent, the loop, the tools, the memory, the verification, lives in the harness. Here is what that layer actually does, why it moves benchmarks more than people expect, and where the real engineering is.
+date: 2026-07-18
+tags: ['ai', 'agents', 'harness']
+---
+
+import Mermaid from '../../components/Mermaid.astro';
+import Bars from '../../components/Bars.astro';
+
+Here is a claim that took me a while to actually believe: the model is not the agent. The agent is the model plus a pile of ordinary software around it, and most of what separates a demo from something you would trust to run unattended lives in that software, not in the weights.
+
+The community has finally given the pile a name. **Agent = Model + Harness.** The [reference framing](https://en.wikipedia.org/wiki/Agent_harness) puts it plainly: the harness is "the software infrastructure surrounding a large language model that enables it to operate as an AI agent." DJ Farrelly has the one-liner I keep coming back to: in every engineering discipline a harness is "the layer that connects, protects, and orchestrates components, without doing the work itself."
+
+I did not arrive at this from theory. I spent months building one (a control-plane CLI wrapped around an open-source agent runtime), and I work on agent infrastructure day to day. Every hard bug, every "why is it burning $40 and looping," every "the eval passed but the CLI is broken," turned out to be a harness problem, not a model problem. So this is the post I wish I had read first: what the harness is, why it matters more than it looks, and where the actual engineering is.
+
+## What the harness actually does
+
+Start from what an LLM is: a stateless function from tokens to tokens. It has no memory of the last call. It cannot run code, read a file, or check whether it was right. It cannot even tell you reliably whether it is finished. Everything an "agent" appears to do beyond producing text is the harness doing it.
+
+The core of a harness is an embarrassingly simple loop. Anthropic states it as "gather context, take action, verify work, repeat" in [their write-up on the Claude Agent SDK](https://claude.com/blog/building-agents-with-the-claude-agent-sdk). Concretely:
+
+<Mermaid label="Fig 1" caption="The agent loop. The model only proposes text; the harness runs the tools, feeds results back, and decides whether the work is actually done." chart={`
+flowchart LR
+  M["LLM<br/>stateless predictor"] -->|proposes tool calls| H["Harness<br/>the loop"]
+  H -->|executes| E["Environment<br/>shell · files · APIs"]
+  E -->|results| H
+  H -->|assembles next context| M
+  H --> V{"work verified?"}
+  V -->|no, keep going| M
+  V -->|yes| R["return"]
+`} />
+
+Every arrow in that diagram is code you write. The model contributes one box. The harness owns the loop, the tool execution, the context it hands back to the model on the next turn, and the judgment about whether to stop. That is a lot of surface area, and it is all yours.
+
+Anthropic's distinction between a *workflow* and an *agent* is worth keeping in your head here. A [workflow](https://www.anthropic.com/research/building-effective-agents) orchestrates models "through predefined code paths." An agent is a system where the model "dynamically directs its own processes and tool usage." Agents earn their complexity only on open-ended problems where you genuinely cannot predict the number of steps. If you can draw the flowchart, write the workflow. The harness discussion is about the case where you cannot.
+
+## The evidence: same model, different interface
+
+The reason to care is that the harness moves numbers that people assume only a better model can move.
+
+The cleanest proof is the [SWE-agent paper](https://arxiv.org/abs/2405.15793) from Princeton. Their whole thesis is that the *agent-computer interface*, the exact shape of the tools and feedback you give the model, "substantially improves agent performance without modifying the underlying LM's weights." Same model. Different harness. On SWE-bench, resolving real GitHub issues:
+
+<Bars label="Fig 2" caption="SWE-bench resolve rate. The strong retrieval baseline and SWE-agent are the same class of model; the interface is what changed. Source: SWE-agent (Yang et al., 2024)." bars={[
+  { label: "RAG baseline", value: 3.8, display: "3.8%" },
+  { label: "SWE-agent · Claude 3 Opus", value: 10.5, display: "10.5%", accent: true },
+  { label: "SWE-agent · GPT-4 Turbo", value: 12.5, display: "12.5%", accent: true },
+]} max={16} />
+
+Roughly a 3x lift on a hard, real-world benchmark, with no change to the model. And it transfers across model families, which is the tell that you are measuring the interface and not a quirk of one model.
+
+There is a more recent, blunter demonstration that made the rounds: a single afternoon of harness work improved fifteen different LLMs at coding, with the models held fixed. [Latent Space's survey](https://www.latent.space/p/ainews-is-harness-engineering-real) collects these results under the honest question "is harness engineering real?" and the fifteen-model result is the strongest yes in the pile. I will get to the skeptics, because the debate is not settled. But the floor of the argument is solid: the harness is worth multiples on tasks that matter.
+
+## Context is the whole game
+
+If I had to compress harness engineering to one job, it would be this: decide what goes in the context window on every single turn, and why. Cognition says it directly in ["Don't Build Multi-Agents"](https://cognition.com/blog/dont-build-multi-agents): context engineering is "effectively the #1 job of engineers building AI agents." Anthropic frames the same question as "what configuration of context is most likely to generate our model's desired behavior" in their piece on [context engineering](https://www.anthropic.com/engineering/effective-context-engineering-for-ai-agents).
+
+The window is small, expensive, and fills up with junk fast. A naive agent stuffs everything (every tool output, every file, the entire history) into the prompt and quietly degrades as the context rots. The harness is what keeps the window sharp:
+
+<Mermaid label="Fig 3" caption="Context does not just accumulate. A good harness assembles it on every turn from several sources and throws most of it away." chart={`
+flowchart LR
+  Sys["system prompt<br/>+ tool schemas"] --> Win["context window<br/>(this turn)"]
+  Ret["just-in-time<br/>retrieval"] --> Win
+  Notes["structured notes<br/>/ memory"] --> Win
+  Hist["compacted<br/>history"] --> Win
+  Win --> M["model call"]
+  M -.->|"summarize, drop tool noise"| Hist
+`} />
+
+Three techniques do most of the work, all from Anthropic's context-engineering write-up. **Compaction**: when history gets long, summarize it, keeping the architectural decisions and open threads and discarding redundant tool output, then continue from the summary. **Just-in-time loading**: hold lightweight identifiers (paths, IDs) and pull the actual content with a tool only when you need it, treating the filesystem as external memory instead of pre-loading it. **Structured note-taking**: let the agent write durable notes outside the window and read them back later.
+
+Cognition adds a rule that cost me a real bug before I internalized it: share full traces, not stray messages, and be very careful with parallel sub-agents, because "actions carry implicit decisions, and conflicting decisions carry bad results." Two sub-agents that cannot see each other's context will make locally reasonable, globally incompatible choices, and you will spend an afternoon figuring out why the output contradicts itself.
+
+## Tools are an interface, design them like one
+
+The tools you expose are the only way the agent affects the world, and their design is high-leverage in a way that surprised me. Anthropic's line is that you should "think about how much effort goes into human-computer interfaces, and plan to invest just as much effort in creating good agent-computer interfaces."
+
+The SWE-agent paper gives four principles that I now treat as a checklist: actions should be simple and easy for the model to understand; actions should be compact and efficient; environment feedback should be informative and concise; and guardrails should catch and correct mistakes during execution. In practice that means a tool named `edit_file` with a clear error when the target does not exist beats a clever, overloaded `fs` tool with a stack trace for feedback. Concise, informative feedback is doing real work: the model's next action is only as good as the observation you hand it.
+
+The failure mode to design out is the model confidently doing the wrong safe-looking thing. "Poka-yoke" the interface: make the bad call hard to express. A read-only tool cannot delete your database no matter how the model reasons about it.
+
+## Verification you do not trust the model to report
+
+This is the part that separates a toy from something you leave running. The model will tell you it is done. It will be wrong often enough that you cannot take its word.
+
+So the harness verifies against ground truth it controls. Anthropic lists three methods: rules-based checks (linters, type checks, explicit constraints with real error messages), visual feedback (screenshots, rendered output), and LLM-as-judge for the fuzzy cases. Their [long-running-agents guidance](https://www.anthropic.com/engineering/effective-harnesses-for-long-running-agents) is uncompromising about it: the agent should "only mark features as passing after careful testing," and prefer real end-to-end checks over unit tests it can game.
+
+The reference framing names the exact risk the harness exists to absorb: the model "fabricates an action or reports a task as finished when it is not." A production harness assumes that will happen and closes the loop with a check the model did not write. If your agent's definition of "done" is the model saying "done," you do not have a harness, you have a very expensive optimist.
+
+And verification only compounds if you can measure it over time, which is why evals and observability are load-bearing, not nice-to-have. Hamel Husain's position, from [his evals writing](https://hamel.dev/blog/posts/evals/), is that the gap between a demo and a product is evals: you keep the full trace of every run, you get humans to label what "good" means, and you build validated evaluators that catch regressions when a prompt, a tool, or the data drifts underneath you. Vibes do not survive contact with a changing model.
+
+## Runtime versus control plane
+
+Once an agent runs for real, a second structure appears above the loop, and naming it is half the battle. The loop itself (model, tools, context management) is the **runtime**, the engine. Everything that decides *how the engine is used* is the **control plane**: which model handles which task, what it is allowed to spend, what gets remembered, how runs are recorded and replayed, what the guardrails are.
+
+<Mermaid label="Fig 4" caption="The runtime reasons. The control plane decides how the runtime is routed, bounded, remembered, and observed. Most operational pain lives in the second box." chart={`
+flowchart TB
+  subgraph CP["Control plane · the operating layer"]
+    direction LR
+    R1["routing<br/>& policy"]
+    R2["memory<br/>& state"]
+    R3["budgets<br/>& guardrails"]
+    R4["evals<br/>& traces"]
+  end
+  subgraph RT["Runtime · the engine"]
+    direction LR
+    L["agent loop"]
+    T["tools"]
+    C["context mgmt"]
+  end
+  CP -->|decides · bounds · records| RT
+  RT -->|emits state| CP
+`} />
+
+This split is the clearest idea in the practitioner writing right now. Ryan Lopopolo describes essentially this two-layer shape (a runtime plus a control plane) in Latent Space's [piece on extreme harness engineering](https://www.latent.space/p/harness-eng), where his hard constraint is that the only truly scarce resource is his team's synchronous attention, so everything gets automated until a task takes under a minute. The same fault line shows up in the reference taxonomy as the "inner harness" that model builders ship versus the "outer harness" you assemble yourself.
+
+I bring it up because it is the exact boundary my own project lives on, and it is where the unglamorous engineering hides. The runtime is the visible magic. The control plane is routing, budgets, a durable state store, trace replay, and a memory system that forgets on purpose. None of it reasons. All of it is what makes the reasoning safe to run.
+
+## So, is harness engineering real?
+
+I am not going to pretend this is settled, because it is not, and the disagreement is between people who have clearly earned their opinion.
+
+The skeptic case is strong. Boris Cherny, who built Claude Code, has said it is "the thinnest possible wrapper over the model" and that the secret sauce "is all in the model." Noam Brown at OpenAI expects scaffolds to "be replaced by the reasoning models" as they get better. The honest version of this argument: every capability you hand-build into the harness is a bet against the next model absorbing it for free, and that bet has repeatedly lost.
+
+The other side, argued by people like Jerry Liu, is that the harness "is everything," the biggest barrier between a capable model and actual delivered value. The fifteen-models-in-an-afternoon result is their exhibit A.
+
+My read, having built one: both are right about different things, and the confusion is from measuring different outcomes. On *raw reasoning*, the model dominates and thin wrappers win, because a better model really does dissolve your clever prompt scaffolding. On *reliable completion of real work in a messy environment*, the harness accounts for a large, measurable share, because verification, context discipline, tool ergonomics, and guardrails are not reasoning problems and the model will not do them for you. The trap is building harness that substitutes for model capability (that decays). The durable harness does the things a model structurally cannot: touch the world, remember across sessions, check itself, and stay within a budget. Build that half.
+
+## A harness in the wild
+
+If you want to read one, the best open example I know is [Hermes](https://github.com/nousresearch/hermes-agent), Nous Research's self-improving agent runtime. Worth flagging up front, because the name is overloaded: this is their agent *harness*, an MIT-licensed CLI and runtime, not their Hermes line of fine-tuned *models*. Different thing entirely.
+
+A few of its design choices are the abstract ideas above made concrete. Sessions are treated as infrastructure, not scrollback: SQLite with full-text search and write-ahead logging underneath the conversation. Long histories are handled with lineage-based compression, where an auxiliary model summarizes older turns and a fresh child session is seeded from the summary, with the parent-child link recorded, rather than rewriting history in place. And tool *registration* is deliberately separated from tool *exposure*: everything registers centrally at import, but a separate layer decides what the model actually sees on a given turn, to keep the visible surface (and the token cost) small. That last one is a pure harness move, invisible to the model, entirely about controlling what the loop puts in front of it.
+
+## Where this leaves me
+
+The uncomfortable, useful conclusion is that a large fraction of "AI engineering" is just engineering: state stores, interfaces, verification, budgets, observability, the boring durable stuff, pointed at a probabilistic component that will confidently lie to you about being finished. The model is necessary. It is nowhere near sufficient.
+
+I believe this strongly enough that I spent months building a harness to feel it, not just read about it: a control plane wrapped around one of these runtimes, with routing, layered memory, budgets, evals, traces, and a genuinely hostile testing pass that found bugs no green test suite ever would. That is the next post. This one was the map. The next one is the territory.
