@@ -1,0 +1,81 @@
+---
+// Renders a Mermaid diagram, themed to the Ledger palette, with dark-mode re-render.
+// Usage in MDX:  <Mermaid label="Fig 1" caption="..." chart={`flowchart LR ...`} />
+interface Props {
+  chart: string;
+  caption?: string;
+  label?: string;
+}
+const { chart, caption, label } = Astro.props;
+---
+
+<figure class="figure">
+  <div class="figure__frame figure__frame--mermaid">
+    <pre class="mermaid">{chart}</pre>
+  </div>
+  {caption && (
+    <figcaption class="figure__cap">
+      {label && <span class="figure__label">{label}</span>}
+      {caption}
+    </figcaption>
+  )}
+</figure>
+
+<script>
+  import mermaid from 'mermaid';
+
+  const shared = {
+    fontFamily: 'Newsreader, Georgia, serif',
+    fontSize: '15px',
+  };
+  const light = {
+    background: '#f4efe3',
+    primaryColor: '#ece4d3',
+    primaryTextColor: '#26221b',
+    primaryBorderColor: '#26221b',
+    lineColor: '#4a4436',
+    secondaryColor: '#e4dac4',
+    tertiaryColor: '#f4efe3',
+    tertiaryTextColor: '#26221b',
+    edgeLabelBackground: '#f4efe3',
+    clusterBkg: '#efe8d8',
+    clusterBorder: '#cdc2ab',
+  };
+  const dark = {
+    darkMode: true,
+    background: '#16130e',
+    primaryColor: '#211c14',
+    primaryTextColor: '#ece3d1',
+    primaryBorderColor: '#cabfa7',
+    lineColor: '#9a8f76',
+    secondaryColor: '#262117',
+    tertiaryColor: '#1b1710',
+    tertiaryTextColor: '#ece3d1',
+    edgeLabelBackground: '#16130e',
+    clusterBkg: '#1e1a13',
+    clusterBorder: '#3a3226',
+  };
+
+  function render() {
+    const isDark = document.documentElement.classList.contains('dark');
+    mermaid.initialize({
+      startOnLoad: false,
+      securityLevel: 'strict',
+      theme: 'base',
+      themeVariables: { ...shared, ...(isDark ? dark : light) },
+      flowchart: { curve: 'basis', htmlLabels: true, padding: 14 },
+      sequence: { useMaxWidth: true },
+    });
+    document.querySelectorAll<HTMLElement>('pre.mermaid').forEach((el) => {
+      if (el.dataset.src) el.innerHTML = el.dataset.src;
+      else el.dataset.src = el.textContent || '';
+      el.removeAttribute('data-processed');
+    });
+    mermaid.run({ querySelector: 'pre.mermaid' });
+  }
+
+  render();
+  // Re-render when the theme toggle flips (class change lands synchronously on click).
+  const toggle = document.getElementById('theme-toggle');
+  if (toggle) toggle.addEventListener('click', () => setTimeout(render, 20));
+</script>

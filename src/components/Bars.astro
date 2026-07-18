@@ -1,0 +1,37 @@
+---
+// A small, on-brand horizontal bar chart (no JS). Good for benchmark comparisons.
+interface Bar { label: string; value: number; display?: string; accent?: boolean; }
+interface Props {
+  bars: Bar[];
+  max?: number;
+  caption?: string;
+  label?: string;
+}
+const { bars, caption, label } = Astro.props;
+const max = Astro.props.max ?? Math.max(...bars.map((b) => b.value));
+---
+
+<figure class="figure">
+  <div class="figure__frame">
+    <div class="bars">
+      {bars.map((b) => (
+        <div class="bars__row">
+          <span class="bars__label">{b.label}</span>
+          <div class="bars__track">
+            <div
+              class={`bars__fill${b.accent ? ' bars__fill--accent' : ''}`}
+              style={`width:${Math.max(2, (b.value / max) * 100).toFixed(1)}%`}
+            ></div>
+          </div>
+          <span class="bars__val">{b.display ?? b.value}</span>
+        </div>
+      ))}
+    </div>
+  </div>
+  {caption && (
+    <figcaption class="figure__cap">
+      {label && <span class="figure__label">{label}</span>}
+      {caption}
+    </figcaption>
+  )}
+</figure>
