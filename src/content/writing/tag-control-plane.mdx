@@ -1,0 +1,125 @@
+---
+title: "TAG: building a control plane around a harness"
+description: "A sequel to the harness-engineering post. I took an open-source agent runtime and spent months building the operating layer around it: routing, layered memory, queues, budgets, evals, traces, and a hostile testing pass that found the bugs a green test suite never would."
+date: 2026-07-18
+tags: ['ai', 'agents', 'harness']
+---
+
+import Mermaid from '../../components/Mermaid.astro';
+
+In [the last post](/writing/harness-engineering/) I argued that the agent is the model plus a harness, and that most operational pain lives above the reasoning loop, in the control plane: routing, memory, budgets, evals, observability. This is the post where I stop pointing at the idea and show you the one I built.
+
+TAG (Terminal Agent Gateway) started from a single question. If a harness is the engine, what is the operating layer around it?
+
+First, an honest note about the engine, because it matters for everything that follows. The runtime underneath TAG is **Hermes**, specifically [Nous Research's open-source `hermes-agent`](https://github.com/nousresearch/hermes-agent), MIT-licensed. (Not their Hermes line of models; their agent runtime. The name is overloaded.) TAG does not reimplement it. TAG vendors it, applies a light branding and TUI skin at setup, and drives it through a small set of chokepoints. Hermes reasons; TAG decides how the reasoning is prepared, routed, bounded, observed, remembered, tested, and shipped. So this is not a "look what I built from scratch" story. It is a "look at the layer a runtime does not give you" story, which is the more useful one.
+
+## "Isn't this just a wrapper?"
+
+Every runtime-backed CLI earns this criticism, and sometimes it is fair. If all you do is forward arguments, wrapper is the correct word.
+
+TAG does forward some commands. Hermes was already a serious substrate: profiles with their own config and memory and sessions, provider support across OpenRouter and OpenAI and DeepSeek and custom endpoints, isolated delegation, durable Kanban, an OpenAI-compatible API server. Copying all of that behind a new name would have been theatre.
+
+The value was never the forwarding. It was the operating layer that a runtime, by design, does not ship: a managed install and profile bootstrapper, a multi-profile routing policy, a durable SQLite state store, a command surface for queues and DAGs and cron and swarm, a real memory lifecycle, cost attribution and budgets and traces, eval suites with a judge and CI gates, security scanning and sandboxed execution, and a distribution story that a Python user and a JavaScript user can both start without learning the runtime internals.
+
+The runtime still reasons. TAG owns everything around the reasoning. That boundary is the whole product.
+
+<Mermaid label="Fig 1" caption="The shape of TAG. Work enters through many doors, the control plane routes and bounds it, the runtime executes, and every run lands in one inspectable state store." chart={`
+flowchart TD
+  Entry["Work enters<br/>CLI · queue · cron · webhook · CI"]
+  Control["TAG control plane<br/>commands · routing · budgets"]
+  Runtime["Runtime boundary<br/>profiles · Hermes loop · tools"]
+  State[("SQLite state<br/>runs · memory · queue · evals")]
+  Outputs["Operator outputs<br/>traces · costs · replay · alerts"]
+  Entry --> Control --> Runtime --> State --> Outputs
+`} />
+
+## The architecture is deliberately boring
+
+TAG's design is not exotic, and that is a feature. State is one WAL-mode SQLite file. Each role (orchestrator, researcher, coder, reviewer) is a profile with its own config, model, and credentials. The CLI is the product boundary, not just a developer convenience. Runs and decisions are not terminal scrollback that vanishes on close; they are rows you can query, export, replay, and test.
+
+Two planes fall out of this. A **management plane** that needs no API key and runs offline: routing, queues, cron, budgets, security scans, traces, dashboards. And an **execution plane** that does need a key, because that is where Hermes actually calls a model. The split is what lets most of the system be inspectable and testable without spending a token.
+
+## Routing: the first real control-plane feature
+
+A single all-purpose model is convenient and a bad default for cost, latency, and verification. The first sharp idea in TAG was making the routing a policy you can see and change, rather than a hardcoded default.
+
+Hermes already had profiles and delegation, so this was building above a good substrate: role defaults, model assignments, task-type routing, benchmark history, fallback chains, and a submit path that can choose between direct execution and a durable Kanban flow. The pattern that emerged is simple. Research: a researcher does the work, a reviewer checks it. Implementation: a coder does the work, a reviewer checks it. Review: the reviewer acts directly. The point was never to cosplay as a team of agents. It was to make "which profile runs this, and why" an inspectable decision instead of a hidden one, and to reserve the expensive model for verification instead of every token.
+
+## Memory: a subsystem, not a feature
+
+Agent memory has two failure modes. It remembers nothing, or it remembers everything with too much confidence. TAG's memory is built to sit between them, and it grew into a small knowledge system rather than a notes table.
+
+<Mermaid label="Fig 2" caption="Memory in TAG is layered, and retrieval is hybrid. Durable conventions stay hot; transient notes decay; episodes preserve the story of a run." chart={`
+flowchart LR
+  subgraph Store["Layered store"]
+    direction TB
+    J["journal"]
+    S["semantic facts<br/>+ confidence decay"]
+    T["temporal facts"]
+    E["episodes"]
+    G["entity graph"]
+  end
+  Q["query"] --> R["hybrid retrieval<br/>BM25 + vector, RRF-fused"]
+  Store --> R
+  R --> Ctx["ranked context"]
+`} />
+
+The layers each do a different job. A cross-session journal keeps human-readable notes that survive a run. Semantic memory stores typed facts with confidence and full-text search. Confidence decays on a type-specific half-life, so a project convention stays effectively permanent while a temporary debugging note fades in weeks. Tiers (core, recall, archival) separate what must stay hot from what can cool off. Temporal facts let a value change over time instead of overwriting its own history. Episodes preserve the whole story of a run, not just its final fact. And an entity graph turns repeated co-occurrence into structure, mined from memory with union-find and zero model calls. That last detail is the point: most of this is retrieval and ranking engineering, not prompting.
+
+## Work intake: many doors, one model
+
+An agent that only runs while you watch it is a toy next to one that can be scheduled, queued, retried, bounded, and inspected. The interesting property is not that TAG has many ways to start work. It is that they all converge into one operating model.
+
+<Mermaid label="Fig 3" caption="Every entrypoint funnels into the same route-execute-observe-evaluate-remember cycle, and every cycle writes state the next run can read before it routes." chart={`
+flowchart TD
+  Intake["Intake<br/>CLI · queue · cron · webhook · CI"] --> Route["Route<br/>profile · model · fallback"]
+  Route --> Execute["Execute<br/>Hermes · tools · workers"]
+  Execute --> Observe["Observe<br/>trace · cost · cache"]
+  Observe --> Evaluate["Evaluate<br/>eval · judge · annotate"]
+  Evaluate --> Remember["Remember<br/>journal · facts · episodes"]
+  Remember --> State[("SQLite")]
+  State --> Future["Future runs read<br/>history before routing"]
+`} />
+
+Without this convergence, each workflow is a separate script. With it, a webhook can enqueue agent work, cron can run the same command surface, an eval failure can become a CI signal, and a budget can stop a runaway loop before it burns the afternoon's token budget. They become different doors into one system instead of ten disconnected ones.
+
+## Observability and evals: price it, then grade it
+
+Agent work is expensive and nondeterministic, which makes observability more important, not less. TAG records runs and steps, spans and trace events, token costs, cache behavior, queue status, eval results, alert firings, and OpenTelemetry GenAI-compatible exports. The goal is not dashboards, it is forensics. When a command produced a bad patch, you should be able to ask which profile ran it, which model, what it cost, which route it took, whether the verifier ran, whether an eval failed, and whether you can replay the trace. The runtime streams a session; the control plane keeps the audit trail.
+
+Evals are where the project stops looking like a wrapper. "Looks good" is not a release process, and neither is a screenshot of one good run. TAG has eval suites, an LLM-as-judge, versioned datasets, CI gates with PR comments, metric-based alerts, a human annotation queue, and prompt versioning. Every agent project eventually hits the same wall: how do you know it got better? A clever route needs feedback. Memory needs tests that catch when it retrieves the wrong thing. A prompt needs version history and regression checks. Otherwise you are shipping on vibes.
+
+## The hardening pass was the turning point
+
+The most valuable phase of the whole project was not adding another command. It was running the command surface adversarially, and it taught me the lesson I now repeat most often: a green test suite is not proof.
+
+My tests hit the library functions directly and skipped the CLI dispatch path, so a large class of dispatch-layer bugs sailed straight through a green run. The fix that actually worked was to fan out parallel auditor agents, have each one run the binary in an isolated sandbox, attack it with missing files and duplicate names and malformed JSON and bad config and concurrency and security boundaries, and independently verify every finding before it counted.
+
+<Mermaid label="Fig 4" caption="The method that found the bugs: stop calling the library, run the binary hostilely, verify each finding, fix the boundary, add a regression test." chart={`
+flowchart LR
+  A["run the binary<br/>(not the library)"] --> B["isolated sandbox<br/>attack the CLI contract"]
+  B --> C["verify each<br/>finding independently"]
+  C --> D["fix the<br/>product boundary"]
+  D --> E["add regression<br/>coverage"]
+  E --> A
+`} />
+
+Phase three used fourteen domain auditors and produced 149 confirmed bugs (4 critical, 30 high, 42 medium, 73 low). The taxonomy matters more than the count: wrong behavior, validation, data integrity, security, crashes, JSON contract violations, resource leaks, exit-code mistakes, consistency, doc mismatches, cross-platform issues, dead code. A follow-up pass found 51 more while verifying the fixes, and it ended with 678 tests passing and a clean 103-command help sweep. The honest read from the stack-decision docs was that only a small fraction of the corpus was language-attributable; the rest were semantic, contract, validation, concurrency, and security bugs that any rewrite would happily reintroduce unless the product boundary was tested the same way. Before that work TAG had features. After it, TAG had evidence the features could survive a user.
+
+## Distribution: the installer is part of the product
+
+Nobody evaluates a control plane they cannot start, so installation is part of the product. TAG ships through PyPI (`pip install tag-agent`) and npm (`npm install -g tag-agent`), where the npm package is a Node launcher that provisions an isolated Python runtime on first use. This is not the cleanest possible distribution story, and I will say so plainly: bundling a managed Hermes runtime creates real first-run and artifact complexity, and the dual-registry bridge exists mostly to be discoverable to JavaScript developers while the actual logic is Python. It was a pragmatic bridge, not a perfect end state.
+
+## What I would keep, and what I would change
+
+I would keep the runtime and control-plane split; it was the correct abstraction, and it let Hermes stay the engine while TAG owned operations. I would keep SQLite, because a local-first control plane needs boring durability more than fashionable architecture. I would keep the profile model, because it gave routing, credentials, and memory somewhere to live. And I would absolutely keep the hostile CLI testing, which is the single most important engineering lesson in the project.
+
+What I would change is sequencing. I would write command-contract tests from the first command, not the hundredth: every command should prove that help works, JSON output parses, missing resources fail cleanly, validation errors are user-facing, exit codes distinguish "no result" from "failure," and sandboxed runs use the correct state path. And I would force every new feature to declare where it lives in the operating model before it merges: its entrypoint, its route, its state table, its runtime boundary, its observability event, its guardrail behavior, its regression contract. The control-plane surface is large, and broad surfaces demand boring contracts. The product grew faster than the contract harness in a few places, and the bug bashes are how I paid down that debt.
+
+## The lesson
+
+The runtime is necessary and not sufficient. The product is the layer that decides where work goes, how it is bounded, how it is remembered, how it is evaluated, how it is observed, and how it is installed. Hermes supplied the engine. TAG supplied the operating layer. SQLite supplied the memory of the system. Profiles supplied the roles. Routes supplied policy. Budgets and alerts supplied guardrails. Evals supplied feedback. Bug bashes supplied reality.
+
+Build the dashboard, the route planner, the fuel gauge, the black-box recorder, and the repair manual. Then run the whole thing hostilely until the product boundary is real. That is the moment an agent runtime starts becoming a product.
+
+(I have since started a native Go port of all this, a single static binary that owns its own runtime and treats Hermes as transitional. That is a different post, and a different set of tradeoffs, for another day.)
