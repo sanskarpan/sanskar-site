@@ -1,5 +1,6 @@
 ---
 import Base from '../../layouts/Base.astro';
+import Tag from '../../components/Tag.astro';
 import { getCollection } from 'astro:content';
 import { formatDate } from '../../utils';
 
@@ -30,7 +31,7 @@ const STAGE_LABEL: Record<string, string> = { seed: 'seed', sapling: 'sapling', 
             <a href={`/notes/${n.id}/`} class="entry__title">{n.data.title}</a>
             <div class="entry__meta">
               <time datetime={n.data.date.toISOString()}>planted {formatDate(n.data.date)}</time>
-              {n.data.tags.map((t) => <span class="tag">{t}</span>)}
+              {n.data.tags.map((t) => <Tag tag={t} />)}
             </div>
             {n.data.description && <p class="entry__desc">{n.data.description}</p>}
           </li>

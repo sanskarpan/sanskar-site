@@ -1,0 +1,68 @@
+---
+import { getCollection } from 'astro:content';
+import Base from '../../layouts/Base.astro';
+import Tag from '../../components/Tag.astro';
+import { formatDate, pad } from '../../utils';
+
+export async function getStaticPaths() {
+  const posts = await getCollection('writing', ({ data }) => !data.draft);
+  const notes = await getCollection('notes');
+  const tags = [...new Set([...posts, ...notes].flatMap((e) => e.data.tags))];
+  return tags.map((tag) => ({
+    params: { tag },
+    props: {
+      tag,
+      posts: posts
+        .filter((p) => p.data.tags.includes(tag))
+        .sort((a, b) => b.data.date.valueOf() - a.data.date.valueOf()),
+      notes: notes
+        .filter((n) => n.data.tags.includes(tag))
+        .sort((a, b) => b.data.date.valueOf() - a.data.date.valueOf()),
+    },
+  }));
+}
+
+const { tag, posts, notes } = Astro.props;
+const total = posts.length + notes.length;
+---
+
+<Base title={`Tagged ${tag}`} description={`Writing and notes tagged ${tag}.`}>
+  <div class="wrap">
+    <section class="hero" style="padding-block: 3.5rem 1rem;">
+      <p class="label hero__eyebrow rise rise-1">
+        <a href="/writing" style="color:var(--muted);">← all writing</a>
+      </p>
+      <h1 class="rise rise-2">Tagged <span style="color:var(--accent);">{tag}</span></h1>
+      <p class="hero__lede rise rise-3" style="margin-top:1rem;">
+        {total} {total === 1 ? 'entry' : 'entries'} on this topic.
+      </p>
+    </section>
+
+    <section class="section rise rise-4" style="border-top:0; padding-top:0;">
+      <ul class="entries">
+        {posts.map((p, i) => (
+          <li class="entry">
+            <span class="entry__no">{pad(i + 1)}</span>
+            <a href={`/writing/${p.id}/`} class="entry__title">{p.data.title}</a>
+            <div class="entry__meta">
+              <time datetime={p.data.date.toISOString()}>{formatDate(p.data.date)}</time>
+              {p.data.tags.slice(0, 3).map((t) => <Tag tag={t} />)}
+            </div>
+            <p class="entry__desc">{p.data.description}</p>
+          </li>
+        ))}
+        {notes.map((n) => (
+          <li class="entry">
+            <span class="entry__no stage" data-stage={n.data.stage}>{n.data.stage}</span>
+            <a href={`/notes/${n.id}/`} class="entry__title">{n.data.title}</a>
+            <div class="entry__meta">
+              <time datetime={n.data.date.toISOString()}>planted {formatDate(n.data.date)}</time>
+              {n.data.tags.slice(0, 3).map((t) => <Tag tag={t} />)}
+            </div>
+            {n.data.description && <p class="entry__desc">{n.data.description}</p>}
+          </li>
+        ))}
+      </ul>
+    </section>
+  </div>
+</Base>

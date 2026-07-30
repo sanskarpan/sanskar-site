@@ -1,5 +1,6 @@
 ---
 import Base from '../../layouts/Base.astro';
+import Tag from '../../components/Tag.astro';
 import { getCollection } from 'astro:content';
 import { formatDate, pad } from '../../utils';
 
@@ -26,7 +27,7 @@ const posts = (await getCollection('writing', ({ data }) => !data.draft))
             <a href={`/writing/${p.id}/`} class="entry__title">{p.data.title}</a>
             <div class="entry__meta">
               <time datetime={p.data.date.toISOString()}>{formatDate(p.data.date)}</time>
-              {p.data.tags.map((t) => <span class="tag">{t}</span>)}
+              {p.data.tags.map((t) => <Tag tag={t} />)}
             </div>
             <p class="entry__desc">{p.data.description}</p>
           </li>
