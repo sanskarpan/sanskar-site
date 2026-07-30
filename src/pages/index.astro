@@ -4,18 +4,37 @@ import { getCollection } from 'astro:content';
 import { PROJECTS } from '../data/projects';
 import { formatDate, pad } from '../utils';
 import { SITE } from '../consts';
+import GitHubContributions from '../components/GitHubContributions.astro';
+import RecentRepos from '../components/RecentRepos.astro';
+import TechStack from '../components/TechStack.astro';
+import Tag from '../components/Tag.astro';
 
 const posts = (await getCollection('writing', ({ data }) => !data.draft))
-  .sort((a, b) => b.data.date.valueOf() - a.data.date.valueOf())
-  .slice(0, 4);
+  .sort((a, b) => b.data.date.valueOf() - a.data.date.valueOf());
+const latestPosts = posts.slice(0, 3);
 
-const featured = PROJECTS.filter((p) => p.featured).slice(0, 4);
+const notes = (await getCollection('notes'))
+  .sort((a, b) => b.data.date.valueOf() - a.data.date.valueOf());
+const latestNotes = notes.slice(0, 2);
 
-// Current work. Edit freely.
-const WORK = [
-  { role: 'Founding Engineer', org: 'NoClick', when: 'since 2025', note: 'AI-native automation platform: agent infra, an 80+ connector framework, LLM gateway.' },
-  { role: 'Team Lead, Full-Stack & AI', org: 'Camarin AI', when: 'since 2024', note: 'Voice & generative-AI systems, agentic backends, payments infra.' },
+const featured = PROJECTS.filter((p) => p.featured).slice(0, 6);
+
+// What the work actually is (not a project list).
+const FOCUS = [
+  { name: 'Storage engines', blurb: 'LSM-trees and B+Trees from scratch: WAL, MVCC, compaction, and crash recovery.' },
+  { name: 'Distributed systems', blurb: 'Raft, replication strategies, gossip, and tracing, plus the failure modes underneath.' },
+  { name: 'Backend & APIs', blurb: 'Payment infrastructure, gRPC services, queues, reverse proxies, and the reliability plumbing.' },
+  { name: 'LLM & agent infra', blurb: 'Agent runtimes, prompt-optimization pipelines, evals, and MCP tooling.' },
 ];
+
+// A curated path for first-time readers.
+const START_HERE = ['harness-engineering', 'building-an-mcp-server-from-scratch', 'an-lsm-tree-in-go'];
+const pathPosts = START_HERE.map((s) => posts.find((p) => p.id === s)).filter(Boolean);
+
+// Topics, from writing + notes, sized by frequency. Synced with the tag links everywhere.
+const tagCounts: Record<string, number> = {};
+[...posts, ...notes].forEach((e) => e.data.tags.forEach((t) => { tagCounts[t] = (tagCounts[t] || 0) + 1; }));
+const topics = Object.entries(tagCounts).sort((a, b) => b[1] - a[1]);
 ---
 
 <Base>
@@ -27,9 +46,11 @@ const WORK = [
         I build systems that <em>hold up</em>, and write about how.
       </h1>
       <p class="hero__lede rise rise-3">
-        I&rsquo;m Sanskar, a founding engineer working across storage engines, LLM
-        infrastructure, and agents. This is my notebook: <a href="/writing">long-form writing</a>,
-        the <a href="/projects">things I&rsquo;ve built</a>, and <a href="/notes">rougher notes</a> in the margins.
+        I&rsquo;m Sanskar. I work across storage engines, backend infrastructure, LLM
+        systems, and agents, mostly by building them from scratch. This is my notebook:
+        <a href="/writing">long-form writing</a>, the
+        <a href="/projects">things I&rsquo;ve built</a>, and
+        <a href="/notes">rougher notes</a> in the margins.
       </p>
       <div class="btnrow rise rise-4">
         <a class="btn btn--accent" href="/writing">Read the writing →</a>
@@ -37,41 +58,48 @@ const WORK = [
       </div>
     </section>
 
-    <!-- CURRENTLY -->
-    <section class="section rise rise-5">
-      <div class="section__head"><span class="label">Currently</span></div>
-      <ul class="entries" style="border-top:0;">
-        {WORK.map((w) => (
-          <li class="entry" style="grid-template-columns: 8rem 1fr;">
-            <span class="entry__no" style="letter-spacing:0.04em;">{w.when}</span>
-            <div>
-              <span class="entry__title" style="font-size:1.35rem;">{w.role} <span class="muted" style="font-style:italic;">· {w.org}</span></span>
-              <p class="entry__desc" style="grid-column:1; margin-top:0.3rem;">{w.note}</p>
-            </div>
+    <!-- START HERE -->
+    <section class="section" data-selftab>
+      <div class="section__head"><span class="label">Start here</span></div>
+      <ol class="path">
+        {pathPosts.map((p, i) => (
+          <li>
+            <a href={`/writing/${p.id}/`}>
+              <span class="path__no">{pad(i + 1)}</span>
+              <span class="path__title">{p.data.title}</span>
+            </a>
           </li>
         ))}
-      </ul>
+      </ol>
+    </section>
+
+    <!-- GITHUB CONTRIBUTIONS -->
+    <section class="section">
+      <div class="section__head">
+        <span class="label">On GitHub</span>
+        <a class="more" href="https://github.com/sanskarpan">@sanskarpan ↗</a>
+      </div>
+      <GitHubContributions />
     </section>
 
     <!-- WRITING -->
-    <section class="section">
+    <section class="section" data-selftab>
       <div class="section__head">
         <span class="label">Selected writing</span>
         <a class="more" href="/writing">all writing →</a>
       </div>
       <ul class="entries">
-        {posts.map((p, i) => (
+        {latestPosts.map((p, i) => (
           <li class="entry">
             <span class="entry__no">{pad(i + 1)}</span>
             <a href={`/writing/${p.id}/`} class="entry__title">{p.data.title}</a>
             <div class="entry__meta">
               <time datetime={p.data.date.toISOString()}>{formatDate(p.data.date)}</time>
-              {p.data.tags.slice(0, 2).map((t) => <span class="tag">{t}</span>)}
+              {p.data.tags.slice(0, 2).map((t) => <Tag tag={t} />)}
             </div>
             <p class="entry__desc">{p.data.description}</p>
           </li>
         ))}
-        {posts.length === 0 && <li class="muted" style="padding:1rem 0;">First post coming soon.</li>}
       </ul>
     </section>
 
@@ -93,6 +121,73 @@ const WORK = [
           </a>
         ))}
       </div>
+    </section>
+
+    <!-- WHAT I WORK ON -->
+    <section class="section">
+      <div class="section__head">
+        <span class="label">What I work on</span>
+        <a class="more" href="/projects/all">all projects →</a>
+      </div>
+      <div class="cards">
+        {FOCUS.map((f) => (
+          <div class="card card--static">
+            <div class="card__top"><span class="card__name">{f.name}</span></div>
+            <p class="card__desc">{f.blurb}</p>
+          </div>
+        ))}
+      </div>
+    </section>
+
+    <!-- THE STACK -->
+    <section class="section">
+      <div class="section__head">
+        <span class="label">The stack</span>
+        <a class="more" href="/uses">what I use →</a>
+      </div>
+      <TechStack />
+    </section>
+
+    <!-- TOPICS -->
+    <section class="section">
+      <div class="section__head"><span class="label">Topics</span></div>
+      <div class="topics">
+        {topics.map(([t, n]) => (
+          <a href={`/topics/${t}/`} class="topic">
+            {t}<span class="topic__n">{n}</span>
+          </a>
+        ))}
+      </div>
+    </section>
+
+    <!-- RECENTLY ACTIVE -->
+    <section class="section">
+      <div class="section__head">
+        <span class="label">Recently active</span>
+        <a class="more" href="https://github.com/sanskarpan?tab=repositories&sort=pushed">on GitHub ↗</a>
+      </div>
+      <RecentRepos />
+    </section>
+
+    <!-- NOTES -->
+    <section class="section" data-selftab>
+      <div class="section__head">
+        <span class="label">From the margins</span>
+        <a class="more" href="/notes">all notes →</a>
+      </div>
+      <ul class="entries">
+        {latestNotes.map((n) => (
+          <li class="entry">
+            <span class="entry__no stage" data-stage={n.data.stage}>{n.data.stage}</span>
+            <a href={`/notes/${n.id}/`} class="entry__title">{n.data.title}</a>
+            <div class="entry__meta">
+              <time datetime={n.data.date.toISOString()}>planted {formatDate(n.data.date)}</time>
+              {n.data.tags.slice(0, 2).map((t) => <Tag tag={t} />)}
+            </div>
+            {n.data.description && <p class="entry__desc">{n.data.description}</p>}
+          </li>
+        ))}
+      </ul>
     </section>
   </div>
 </Base>
