@@ -4,7 +4,7 @@ const path = Astro.url.pathname;
 const isActive = (href: string) => path === href || (href !== '/' && path.startsWith(href));
 ---
 
-<header class="masthead">
+<header class="masthead" data-selftab>
   <div class="wrap masthead__row">
     <a href="/" class="brand" aria-label={`${SITE.name}, home`}>
       <span>sanskar</span><span class="brand__mark">.</span>
