@@ -1,17 +1,23 @@
 ---
 title: Building an MCP server from scratch
-description: What the Model Context Protocol actually is, the three primitives that matter, and how to expose real tools to an LLM without hand-rolling an orchestration loop.
+description: "What the Model Context Protocol actually is in 2026, the primitives that matter, and how to expose real tools to an LLM without hand-rolling an orchestration loop."
 date: 2026-06-20
+updated: 2026-07-30
 tags: ['ai', 'mcp', 'agents']
+draft: false
 ---
 
 import Figure from '../../components/diagrams/Figure.astro';
 import McpFlow from '../../components/diagrams/McpFlow.astro';
 import McpPrimitives from '../../components/diagrams/McpPrimitives.astro';
+import McpCollision from '../../components/diagrams/mcp-collision.astro';
+import Mermaid from '../../components/Mermaid.astro';
 
 The **Model Context Protocol** (MCP) is the least glamorous and most useful piece of the agent stack right now. It's the thing that lets a model actually *do* something (read a file, hit an API, call your service) through a standard interface instead of a pile of bespoke glue.
 
-I've now built MCP servers twice in production, and the mental model is simpler than the acronym suggests.
+If you've read my post on [harness engineering](/writing/harness-engineering), MCP is the tool layer of that picture. The harness owns the loop: gather context, take action, verify, repeat. MCP is how you hand it good actions to take. The SWE-agent result I quoted there (a ~3x lift on a hard benchmark from interface design alone, no weight changes) is the whole reason to care about getting a server right. Tool ergonomics move agent success. A server is where you spend that effort.
+
+The mental model is simpler than the acronym suggests. What has gotten *less* simple is the spec, which has moved fast enough that a lot of tutorials are quietly wrong. So this is the from-scratch version, checked against the 2026 reality.
 
 ## Host, client, server
 
@@ -21,27 +27,35 @@ There are three roles, and the shape is always the same: the **host** is the app
   <McpFlow />
 </Figure>
 
-- **Host:** the AI app (Claude Desktop, Cursor, your own agent).
-- **Client:** a 1:1 connection the host opens *to* a server.
+- **Host:** the AI app (Claude Desktop, Cursor, your own agent). It holds the model and the loop.
+- **Client:** a 1:1 connection the host opens *to* a server. One client per server, always.
 - **Server:** the integration you write. This is your job.
 
-## The three primitives
+The 1:1 detail matters more than it looks. A host running five integrations is running five clients against five servers, and those servers do not know about each other. That independence is clean until two of them expose a tool with the same name, which I'll come back to under failure modes.
 
-A server exposes three primitives, and getting the distinction right is most of the design work. The key question for each is *who decides when it's used*.
+## The primitives
+
+A server exposes a small set of primitives, and getting the distinction right is most of the design work. The key question for each is *who decides when it's used*.
 
 <Figure label="Fig 2" caption="Tools, resources, and prompts differ mainly in who is in control of them.">
   <McpPrimitives />
 </Figure>
 
-1. **Tools:** model-controlled *actions* (`send_email`, `query_db`). The model decides when to call them.
-2. **Resources:** application-controlled *data* addressed by URI (`file://…`, `db://orders/42`). Read-only context.
-3. **Prompts:** reusable, parameterised templates the user invokes.
+The three that matter, and that you will use in every real server:
 
-> The trap is shipping everything as a tool. If it's data the app should attach, it's a resource. If it's an action the model should choose, it's a tool.
+1. **Tools:** model-controlled *actions* (`send_email`, `query_db`). The model decides when to call them. This is where the leverage is.
+2. **Resources:** application-controlled *data* addressed by URI (`file://…`, `orders://42`). Read-only context the app attaches. The app, not the model, decides what to load.
+3. **Prompts:** user-invoked templates. A slash command the user picks, not something the model reaches for.
+
+> The trap is shipping everything as a tool. If it's data the app should attach, it's a resource. If it's an action the model should choose, it's a tool. If it's a workflow the user triggers, it's a prompt. The "who controls it" axis is the whole design.
+
+There are also three *client*-side primitives, which run in the opposite direction: the server asks the client to do something. **Sampling** lets a server request an LLM completion from the host, so the server can borrow the host's model instead of holding an API key. **Elicitation** lets a server ask the user for structured input mid-call. **Roots** let the client tell a server which directories or URIs it's allowed to operate on.
+
+Here is the part I'd have gotten wrong if I hadn't checked: as of the **2026-07-28 release candidate** (SEP-2577), roots, sampling, and logging are **deprecated**, though not removed. The guidance is to replace roots with tool parameters or server config, replace sampling with direct provider APIs, and replace logging with `stderr` (stdio) or OpenTelemetry. They stay functional for at least a twelve-month window. ([spec blog](https://blog.modelcontextprotocol.io/posts/2026-07-28-release-candidate/)) So I'd build on tools, resources, prompts, and elicitation, and treat sampling as legacy. If your host targets an older client, note that this RC is not yet the stable spec (the current stable spec is **2025-11-25**), so check what your host actually negotiates.
 
 ## A minimal server
 
-With `fastmcp` (Python), a working server is almost entirely decorators:
+With `fastmcp` (Python), a working server is almost entirely decorators. The docstrings and type hints *are* the schema:
 
 ```python
 from fastmcp import FastMCP
@@ -50,53 +64,148 @@ mcp = FastMCP("orders")
 
 @mcp.tool
 def refund(order_id: str, amount_cents: int) -> str:
-    """Issue a refund for an order. Amounts are in cents."""
+    """Issue a refund for an order. Amounts are in cents, never dollars."""
     # ... call your real payments service here ...
     return f"refunded {amount_cents}c on {order_id}"
-
-@mcp.resource("orders://{order_id}")
-def order(order_id: str) -> str:
-    """Read-only order context the app can attach."""
-    return load_order(order_id).as_markdown()
 
 if __name__ == "__main__":
     mcp.run(transport="stdio")
 ```
 
-The docstrings and type hints *are* the schema: they become the tool description and the input contract the model sees. Spend real effort here; a vague docstring is a mis-called tool.
+The docstring and the types become the tool description and the input contract the model sees. Spend real effort here. This is the same principle from the harness post: actions should be simple and easy for the model to understand. A vague docstring is a mis-called tool. `amount_cents: int` with "never dollars" spelled out is the difference between a $5.00 refund and a $500.00 one, and the model has no way to know which you meant unless you tell it in the only channel it reads: the schema.
 
-## Transports, and the one deprecation to know
+## Resources and resource templates
 
-Two transports matter in 2026:
+Resources are read-only context addressed by URI. A **resource template** parameterizes that URI, so one function serves a whole family of addresses:
 
-- **stdio:** the server runs as a local subprocess. This is what Claude Desktop / Cursor / VS Code use.
-- **Streamable HTTP:** the current remote transport. One `/mcp` endpoint, scalable, works serverless.
+```python
+@mcp.resource("orders://{order_id}")
+def order(order_id: str) -> str:
+    """Read-only order context the app can attach by URI."""
+    return load_order(order_id).as_markdown()
+```
 
-The thing people get wrong: the old **HTTP+SSE** transport is **deprecated** (as of the 2025-03-26 spec) in favour of Streamable HTTP. If a tutorial tells you to stand up an SSE endpoint, it's out of date.
+`orders://A1` and `orders://B7` both resolve through this one function. The app decides when to attach one, which is the point: the model isn't burning a tool call to fetch context it could have been handed. Keep the returned payload tight. A resource that dumps a 40-page order history is a resource that eats the window, which is the second failure mode below.
 
-## Auth, briefly
+## Errors the model can act on
 
-Local stdio servers inherit the user's machine, so auth is rarely the problem. Remote servers are where it bites. FastMCP 2.x supports **OAuth 2.1** with dynamic client registration and an OAuth proxy for GitHub / Google / Azure, plus plain bearer tokens for service-to-service. The rule that saves you: **scope tools to the narrowest permission that works**, and never let a single misconfigured server hold broad write access across a whole account.
+An exception that bubbles up as a stack trace is a wasted turn. The model gets an opaque failure and guesses. FastMCP gives you `ToolError` for the case where you want a specific, actionable message to reach the model on purpose:
+
+```python
+from fastmcp.exceptions import ToolError
+
+@mcp.tool
+def refund(order_id: str, amount_cents: int) -> str:
+    """Issue a refund for an order. Amounts are in cents, never dollars."""
+    order = load_order(order_id)
+    if order is None:
+        raise ToolError(f"no order {order_id}; check the id and retry")
+    if amount_cents > order.total_cents:
+        raise ToolError(
+            f"refund {amount_cents}c exceeds order total {order.total_cents}c"
+        )
+    return f"refunded {amount_cents}c on {order_id}"
+```
+
+By default FastMCP masks unexpected internal exceptions (an accidental `KeyError` shouldn't leak your internals to the model), while `ToolError` is the exception whose message is *meant* to travel. This is the "informative, concise feedback" principle made concrete: the model's next action is only as good as the error you hand back. "refund exceeds order total" gets corrected; a 500 gets retried blindly.
 
 ## Testing without a model
 
-You don't need an LLM in the loop to test an MCP server, and you shouldn't. FastMCP ships an **in-memory client** so you can call your tools directly in a normal test:
+You don't need an LLM in the loop to test an MCP server, and you shouldn't. FastMCP ships an **in-memory client** that connects straight to your server object, no subprocess, no transport, no network. You call your tools directly in a normal async test:
 
 ```python
+import pytest
 from fastmcp import Client
+from fastmcp.exceptions import ToolError
 
-async def test_refund():
+@pytest.mark.asyncio
+async def test_refund_ok():
     async with Client(mcp) as client:
-        result = await client.call_tool("refund", {"order_id": "A1", "amount_cents": 500})
-        assert "refunded" in result.data
+        result = await client.call_tool(
+            "refund", {"order_id": "A1", "amount_cents": 500}
+        )
+        assert "refunded 500c" in result.data
+
+@pytest.mark.asyncio
+async def test_refund_over_total_is_rejected():
+    async with Client(mcp) as client:
+        with pytest.raises(ToolError, match="exceeds order total"):
+            await client.call_tool(
+                "refund", {"order_id": "A1", "amount_cents": 999_999}
+            )
 ```
 
-That turns "is my agent behaving?" (slow, non-deterministic) into "is my tool correct?" (fast, deterministic). Keep the two concerns separate.
+That turns "is my agent behaving?" (slow, non-deterministic, needs a model) into "is my tool correct?" (fast, deterministic, runs in CI). Keep the two concerns apart. Tool correctness is a unit test. Agent behavior is an eval, and evals belong in their own slow, occasional pipeline. Mixing them gives you a suite that's both flaky and expensive, which is the worst of both.
+
+## Transports, and the one deprecation to know
+
+The current spec (2025-11-25) defines exactly two transports. ([spec: transports](https://modelcontextprotocol.io/specification/2025-11-25/basic/transports))
+
+- **stdio:** the server runs as a local subprocess, reading JSON-RPC from stdin and writing to stdout. This is what Claude Desktop, Cursor, and VS Code use, and clients "SHOULD support stdio whenever possible."
+- **Streamable HTTP:** the current remote transport. A single `/mcp` endpoint that handles both POST and GET, optionally upgrading to SSE to stream server messages.
+
+<Mermaid label="Fig 3" caption="stdio for local subprocess servers, Streamable HTTP for remote. One MCP endpoint handles both POST and an optional SSE upgrade." chart={`
+flowchart LR
+  H["Host<br/>model + loop"]
+  H -->|stdio| L["Local server<br/>subprocess"]
+  H -->|"POST /mcp"| R["Remote server<br/>Streamable HTTP"]
+  R -.->|"optional SSE"| H
+`} />
+
+The thing people get wrong: the old **HTTP+SSE** transport (two endpoints, a long-lived SSE stream) is **deprecated**, replaced by Streamable HTTP in the 2025-03-26 revision. The spec now documents it only for backwards compatibility. If a tutorial tells you to stand up a separate SSE endpoint, it predates this and you're building on a dead path. One nuance worth keeping straight: SSE is not gone as a *mechanism*: Streamable HTTP can still upgrade a single response to an SSE stream. What's dead is the old two-endpoint *transport*, not server-sent events themselves.
+
+## Auth for remote servers
+
+Local stdio servers inherit the user's machine, so auth is rarely the problem: the process already runs as the user. Remote servers are where it bites, and the spec has gotten specific here.
+
+An MCP server is an OAuth **resource server**. A separate authorization server handles login and issues tokens. Concretely, the current spec requires:
+
+- **OAuth 2.1** with PKCE for both public and confidential clients.
+- **Protected Resource Metadata** (RFC 9728): your server publishes a small JSON document at a well-known path naming its authorization server, so clients can discover where to authenticate.
+- **Dynamic Client Registration** (RFC 7591) *may* be supported, letting clients register without a human provisioning a client ID first.
+- **Resource Indicators** (RFC 8707): the client must send a `resource` parameter binding each token to your specific server, and your server must validate it's the intended audience. ([spec: authorization](https://modelcontextprotocol.io/specification/2025-11-25/basic/authorization))
+
+Put together, the flow is a token bound to one audience and an MCP server that refuses anything else. The client discovers where to authenticate from your metadata, runs OAuth 2.1 with PKCE against the separate authorization server, and asks for a token scoped to your resource. Your server checks the audience on every call and never replays that token upstream.
+
+<Mermaid label="Fig 4" caption="Remote auth. The token is bound to your server's audience via resource indicators, and the MCP server validates that audience rather than passing the token through." chart={`
+sequenceDiagram
+  participant C as Client
+  participant S as MCP server
+  participant A as Auth server
+  C->>S: request without token
+  S-->>C: 401 plus metadata URL
+  C->>S: fetch protected resource metadata
+  S-->>C: names auth server
+  C->>A: authorize with PKCE plus resource
+  A-->>C: token scoped to audience
+  C->>S: call with bound token
+  S->>S: validate audience
+  Note over S,A: no token passthrough<br/>server gets its own upstream token
+  S-->>C: result
+`} />
+
+FastMCP 2.x supports this stack, including an OAuth proxy for providers like GitHub, Google, and Azure, plus plain bearer tokens for service-to-service. The rule that saves you: **scope tools to the narrowest permission that works**, and never let a single misconfigured server hold broad write access across a whole account.
 
 ## Serverless vs long-running
 
-For remote servers you have a real architectural choice. A long-running HTTP service keeps state and warm connections; a serverless deployment (Workers / Lambda / Cloud Run) pairs naturally with *stateless* Streamable HTTP and scales to zero. I've shipped both, and the deciding factor was almost always whether a given integration needed to hold a session.
+For remote servers you have a real architectural choice, and the transport decides it for you. Streamable HTTP can run **stateless**: no session ID, each request self-contained. That pairs naturally with serverless (Workers, Lambda, Cloud Run) and scales to zero. If instead you assign an `MCP-Session-Id` at initialization and hold per-session state, you want a long-running service with warm connections. The deciding factor is almost always whether a given integration needs to hold a session. If it doesn't, stay stateless and let the platform scale it. Holding session state you don't need is just a bill and a failure mode you added for nothing.
+
+## Failure modes I've actually hit
+
+The protocol is small. The ways it goes wrong in production are not in the spec, so here they are.
+
+**Tool-name collisions across servers.** Because each client is 1:1 and servers don't know about each other, two servers exposing `search` or `create` will collide in the host's flattened tool list. The model then either can't tell them apart or the host silently shadows one.
+
+<Figure label="Fig 5" caption="Two independent servers each register a search tool. In the agent's one flat list the names collide and the model can no longer say which server it meant.">
+  <McpCollision />
+</Figure>
+
+Namespace your tool names (`github_search`, not `search`) and keep the total surface small. This is the same instinct as the harness point about separating tool *registration* from tool *exposure*: fewer, clearer tools in front of the model beats a big flat pile.
+
+**Oversized resource payloads.** A resource that returns everything blows the context window, and worse, it does it quietly. The model's answers degrade as the window fills with a resource it barely needed. Return the minimum, paginate, or hand back an identifier and let the model pull detail with a tool only when it needs it. Just-in-time loading is a resource-design decision, not just a harness one.
+
+**Confused-deputy risk in the OAuth proxy.** When your server proxies to a third-party API, the classic attack is a malicious client obtaining authorization codes without real user consent, exploiting a static client ID plus cached consent. The spec's own security guidance is blunt about the mitigations: per-client consent, exact redirect-URI validation, and never blindly forwarding a token upstream (that's token passthrough, and it's banned outright: your server must get its own token from the upstream, not replay the one it received). ([spec: security best practices](https://modelcontextprotocol.io/docs/tutorials/security/security_best_practices)) If you run an OAuth proxy, read that page in full before you ship it.
 
 ---
 
-That's the whole shape of it. The protocol is small on purpose; the craft is in choosing primitives well and writing schemas a model can't misread. Next I'll write up wiring multiple servers behind one agent, and where multi-server tool-naming starts to hurt.
+That's the whole shape of it. The protocol is small on purpose; the craft is in choosing primitives well and writing schemas a model can't misread. It ties straight back to the harness: MCP is how you give the loop good tools, and a well-shaped tool moves agent success in a way a better model won't do for you. Next I'll write up wiring multiple servers behind one agent, and where multi-server tool-naming starts to actually hurt.

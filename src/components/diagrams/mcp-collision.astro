@@ -1,0 +1,41 @@
+---
+// Two servers each expose a tool named `search`. In the host's flattened tool
+// list the names collide and the model cannot tell them apart.
+---
+<svg class="dgm" viewBox="0 0 680 300" role="img" aria-label="One agent connected to two servers that both expose a tool named search. In the host's flattened tool list the two names collide and the model cannot disambiguate them.">
+  <defs>
+    <marker id="mcp-col-ah" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" class="dgm-arrow" />
+    </marker>
+  </defs>
+
+  <!-- Agent / host -->
+  <rect x="14" y="112" width="150" height="76" rx="8" class="dgm-box dgm-box--accent" />
+  <text x="89" y="144" text-anchor="middle" class="dgm-label">Agent</text>
+  <text x="89" y="164" text-anchor="middle" class="dgm-sub">one flat tool list</text>
+
+  <!-- Server A -->
+  <rect x="252" y="28" width="176" height="84" rx="8" class="dgm-box" />
+  <text x="272" y="58" class="dgm-title">GitHub server</text>
+  <rect x="272" y="70" width="136" height="28" rx="6" class="dgm-box dgm-box--dashed" />
+  <text x="340" y="89" text-anchor="middle" class="dgm-label">search</text>
+
+  <!-- Server B -->
+  <rect x="252" y="188" width="176" height="84" rx="8" class="dgm-box" />
+  <text x="272" y="218" class="dgm-title">Docs server</text>
+  <rect x="272" y="230" width="136" height="28" rx="6" class="dgm-box dgm-box--dashed" />
+  <text x="340" y="249" text-anchor="middle" class="dgm-label">search</text>
+
+  <!-- Arrows agent -> servers -->
+  <line x1="166" y1="138" x2="248" y2="82" class="dgm-line" marker-end="url(#mcp-col-ah)" />
+  <line x1="166" y1="162" x2="248" y2="218" class="dgm-line" marker-end="url(#mcp-col-ah)" />
+
+  <!-- Collision point -->
+  <line x1="410" y1="84" x2="512" y2="140" class="dgm-line dgm-line--accent" />
+  <line x1="410" y1="244" x2="512" y2="160" class="dgm-line dgm-line--accent" />
+  <rect x="516" y="118" width="150" height="64" rx="8" class="dgm-box dgm-box--accent" />
+  <text x="591" y="146" text-anchor="middle" class="dgm-label">search ?</text>
+  <text x="591" y="166" text-anchor="middle" class="dgm-sub dgm-sub--accent">which one</text>
+
+  <text x="463" y="30" text-anchor="middle" class="dgm-sub">collision</text>
+</svg>
