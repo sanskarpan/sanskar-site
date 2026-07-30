@@ -1,0 +1,285 @@
+---
+title: Lock-free queues under the microscope
+description: "The Treiber stack, the Michael-Scott queue, the ABA problem, and why a green race detector proves nothing. Built in Go, checked against a sequential spec with a linearizability model checker."
+date: 2026-07-26
+tags: ['go', 'concurrency', 'systems']
+draft: true
+---
+
+import Mermaid from '../../components/Mermaid.astro';
+import Figure from '../../components/diagrams/Figure.astro';
+import LfTreiber from '../../components/diagrams/LfTreiber.astro';
+import LfAba from '../../components/diagrams/LfAba.astro';
+import LfRing from '../../components/diagrams/LfRing.astro';
+
+A mutex is a small confession. It says: I could not reason about this interleaving, so I forbade all of them. That is usually the right call. But when a single hot pointer is contended by every core on the machine, the lock becomes the bottleneck, and the threads spend their lives queued behind it rather than doing work.
+
+Lock-free data structures take the other bet. No thread is ever blocked waiting on another thread's critical section, because there is no critical section. Progress is made with atomic compare-and-swap on a single word, and the price is that you now have to reason about every interleaving yourself. I built a [small library of these in Go](https://github.com/sanskarpan/lockfree) (a Treiber stack, a Michael-Scott queue, a sequence-based ring buffer, a Harris-Michael list) mostly to find out where that reasoning breaks. This is what I learned pointing a microscope at the two classic structures, and why the interesting part turned out to be the tests, not the algorithms.
+
+## What "lock-free" actually promises
+
+The word gets used loosely, so pin it down. **Lock-free** means system-wide progress: at any moment, at least one thread is guaranteed to complete its operation in a finite number of steps. Individual threads can starve. A thread can lose its CAS, retry, lose again, and spin for a while, as long as *someone* is winning each round. That is the guarantee the Treiber stack and the Michael-Scott queue give you.
+
+**Wait-free** is the stronger property: *every* thread finishes in a bounded number of its own steps, no matter what the others do. No starvation, ever. Wait-free algorithms exist but they are heavier, and neither of these two is wait-free. My reads (`Peek`, `Len` on the atomic counter) are wait-free because they are a single load; the mutating operations are lock-free.
+
+Getting this distinction right matters because the failure mode of a lock-free structure is not deadlock, it is livelock and starvation, and those do not show up in a functional test.
+
+## The Treiber stack: one pointer, one CAS
+
+The stack is the simplest thing in the library and the right place to see the whole pattern. It is a singly linked list where `head` points at the top. Push allocates a node, points its `next` at the current head, and swings `head` to the new node with a CAS. If the CAS fails, the head moved under you, so you re-read and try again.
+
+```go
+func (s *Stack[T]) Push(value T) {
+	newNode := &node[T]{value: value}
+
+	for {
+		oldHead := atomic.LoadPointer(&s.head)
+		newNode.next = (*node[T])(oldHead)
+
+		// Try to swap the head with the new node.
+		if atomic.CompareAndSwapPointer(&s.head, oldHead, unsafe.Pointer(newNode)) {
+			s.len.Add(1)
+			return
+		}
+		// CAS failed: another goroutine moved head. Retry.
+	}
+}
+```
+
+That `for` loop with a CAS at the bottom is the entire genre. Read the current state, compute the new state locally, then atomically install the new state *only if nothing changed since you read it*. The CAS is the linearization point: the instant the swap succeeds is the instant the push "happened", and it happened atomically with respect to every other operation.
+
+<Figure label="Fig 1" caption="The whole stack is one hot pointer. Push links a new node ahead of head then swings head to it with a single CAS; pop swings head to head.next. That one CAS on head is the linearization point.">
+  <LfTreiber />
+</Figure>
+
+Pop is the mirror image, with one extra guard for the empty case:
+
+```go
+func (s *Stack[T]) Pop() (T, bool) {
+	for {
+		oldHead := atomic.LoadPointer(&s.head)
+		if oldHead == nil {
+			var zero T
+			return zero, false
+		}
+		oldNode := (*node[T])(oldHead)
+		newHead := unsafe.Pointer(oldNode.next)
+
+		if atomic.CompareAndSwapPointer(&s.head, oldHead, newHead) {
+			s.len.Add(-1)
+			return oldNode.value, true
+		}
+		// CAS failed: retry.
+	}
+}
+```
+
+Notice `len` is a separate `atomic.Int64` that I bump *after* the CAS. It is deliberately not part of the linearization point. The count can lag the structure by a hair under contention, which is why `Len()` is documented as an estimate, not a snapshot. Trying to keep an exact length in lockstep with the head would reintroduce a second point of contention and defeat the purpose.
+
+## The ABA problem: the CAS that lies
+
+The pop above hides a genuinely nasty bug, and it is the reason lock-free code has a reputation. CAS checks that a word still holds the value you read. It does not check that the word never *changed*. Those are different claims.
+
+<Mermaid label="Fig 2" caption="ABA. Thread 1 reads head A, stalls, and wakes to find head is A again. Its CAS succeeds, but A points at freed memory now." chart={`
+sequenceDiagram
+  participant T1 as Thread 1
+  participant H as head
+  participant T2 as Thread 2
+  T1->>H: read head is A
+  Note over T1: about to CAS A to B<br/>then stalls
+  T2->>H: pop A, head is now B
+  T2->>H: pop B, head is now C
+  T2->>H: push A back, head is A
+  Note over H: head is A again<br/>but A.next is stale
+  T1->>H: CAS head A to B succeeds
+  Note over T1: installs a pointer<br/>into reclaimed nodes
+`} />
+
+Thread 1 reads `head = A` and remembers `A.next = B`. It stalls. Thread 2 pops A, pops B, then pushes a *new* value that happens to reuse node A's address, so `head = A` again but `A.next` now points somewhere else entirely. Thread 1 wakes, does its CAS, sees `head` is still `A`, and cheerfully sets `head = B`, a node that was already removed. The stack is now corrupt, and the CAS reported success.
+
+The classic fix is a **tagged pointer**: glue a monotonic version counter to the pointer and CAS both together, so the tag differs even when the address repeats. In C you pack it into a double-width word. Here is the shape:
+
+```go
+// Conceptual: pointer plus a version tag, swung as one atomic unit.
+type taggedPtr struct {
+	ptr *node
+	tag uint64 // bumped on every successful update
+}
+// CAS(&head, {A, 7}, {B, 8}) fails if the tag has since moved past 7.
+```
+
+<Figure label="Fig 3" caption="ABA is a memory-reuse bug. A naive CAS checks only the address, so a node freed and reallocated at the same 0x40 lets a stale swap succeed. A versioned pointer catches it: the tag advanced from 7 to 9, so the CAS fails and the thread retries.">
+  <LfAba />
+</Figure>
+
+In this library I sidestep the whole thing, and it is worth being precise about *why*, because "Go doesn't have ABA" is a myth. ABA is fundamentally a **memory reclamation** problem: it can only bite if a node's address gets freed and reused while a stalled thread still holds it. Go has a tracing garbage collector, and a node that any thread still references is by definition reachable, so the GC will not collect it and the allocator will not hand its address back out. The address cannot be reused while thread 1 is looking at it. That closes the ABA window for free. The trade-off is real: I have outsourced manual reclamation (hazard pointers, epochs) to the runtime, and I pay for it in GC pressure instead. In a language without a GC, every one of these CAS loops needs a tag or a hazard pointer, and getting that wrong is how you get use-after-free in production.
+
+## The Michael-Scott queue: two pointers and a helping hand
+
+A stack has one hot pointer. A FIFO queue has two, `head` and `tail`, and they move in opposite directions, which is where it gets interesting. The Michael-Scott algorithm is the standard answer, and the implementation here follows it closely.
+
+Two ideas carry the whole design. First, a permanent **sentinel node**: the queue always holds one dummy node so that `head` and `tail` are never nil and enqueue/dequeue never have to special-case an empty list against a one-element list. Dequeue returns the value in the node *after* the sentinel and then promotes that node to be the new sentinel. Second, enqueue is *two* independent CAS operations that any thread is allowed to finish. That second point is the clever bit.
+
+<Mermaid label="Fig 4" caption="Enqueue is two steps. Link the node, then swing the tail. A thread that sees a half-finished enqueue helps complete step two before retrying." chart={`
+flowchart TB
+  S["read tail<br/>and tail.next"] --> C{"tail.next<br/>is nil"}
+  C -->|yes| L["CAS tail.next<br/>from nil to newNode"]
+  L -->|ok| SW["CAS tail<br/>forward to newNode"]
+  SW --> D["done"]
+  C -->|no, tail lags| H["CAS tail forward<br/>to help, then retry"]
+  H --> S
+  L -->|failed| S
+`} />
+
+Here is the real enqueue:
+
+```go
+func (q *Queue[T]) Enqueue(value T) {
+	newNode := &node[T]{value: value}
+	newNodePtr := unsafe.Pointer(newNode)
+
+	for {
+		tail := atomic.LoadPointer(&q.tail)
+		tailNode := (*node[T])(tail)
+		next := atomic.LoadPointer(&tailNode.next)
+
+		// Consistency re-check: is tail still the tail?
+		if tail == atomic.LoadPointer(&q.tail) {
+			if next == nil {
+				// Tail really is the last node. Try to link the new node.
+				if atomic.CompareAndSwapPointer(&tailNode.next, next, newNodePtr) {
+					// Linked. Now try to swing tail forward. If this CAS
+					// fails, another thread will help; the queue is correct
+					// either way.
+					atomic.CompareAndSwapPointer(&q.tail, tail, newNodePtr)
+					q.len.Add(1)
+					return
+				}
+			} else {
+				// tail is lagging behind a linked node. Help it forward.
+				atomic.CompareAndSwapPointer(&q.tail, tail, next)
+			}
+		}
+	}
+}
+```
+
+Two details in there are load-bearing and easy to omit if you code it from memory.
+
+The **consistency re-check**, `if tail == atomic.LoadPointer(&q.tail)`, guards against a torn read. We loaded `tail`, then separately loaded `tail.next`, and between those two loads the world could have moved. Re-reading `tail` and confirming it is unchanged tells us the `(tail, next)` pair we are about to reason about was coherent at a single instant. Without it, you can act on a `next` that belongs to a `tail` that no longer exists.
+
+The **helping** step is what makes this lock-free rather than just concurrent. When enqueue succeeds at linking the node but gets suspended before it swings the tail forward, the queue is in a legal but half-finished state: `tail` points one node behind the real last node. Rather than wait for the stalled thread to wake up (which would make progress depend on one specific thread, breaking the lock-free guarantee), the *next* thread to come along notices `tail.next != nil`, deduces that tail is lagging, and completes the swing itself before doing its own work. No thread is ever blocked on another thread's scheduling. That is the mechanism behind "system-wide progress" made concrete.
+
+Dequeue carries the same shape, plus one ordering rule that is a real bug if you get it backwards:
+
+```go
+} else {
+	// Read the value BEFORE the CAS. If we swing head first, another
+	// dequeuer could recycle the node and clobber the value.
+	nextNode := (*node[T])(next)
+	value := nextNode.value
+
+	if atomic.CompareAndSwapPointer(&q.head, head, next) {
+		q.len.Add(-1)
+		return value, true
+	}
+}
+```
+
+Read the value, *then* CAS the head. Do it in the other order and you have handed the node to another dequeuer while still intending to read from it.
+
+## False sharing: the bug the profiler hides
+
+There is a slower, quieter failure that has nothing to do with correctness. CPUs move memory in cache lines, typically 64 bytes. If `head` and `tail` land in the same cache line, then a core enqueuing (writing `tail`) invalidates that line in the core dequeuing (reading `head`), even though they touch different variables. The hardware ping-pongs the line between cores and your "lock-free" throughput quietly collapses under contention. This is **false sharing**, and it does not show up as a bug, only as a number that is worse than it should be.
+
+The structural defense is padding: give each independently-mutated word its own cache line so producers and consumers never fight over the same line.
+
+```go
+// The idea: pad hot fields onto separate cache lines.
+type paddedQueue struct {
+	head atomic.Pointer[node]
+	_    [56]byte // pad head out to a full 64-byte line
+	tail atomic.Pointer[node]
+	_    [56]byte
+}
+```
+
+I will be honest about what the code actually does here, because the mechanism matters more than the folklore. The ring buffer in this library does not hand-pad with filler bytes; it gives every slot its own `atomic.Uint64` sequence number and drives all synchronization through those per-slot sequences, which spreads the contention across the ring instead of concentrating it on two shared counters. Producers advance a write position, consumers advance a read position, and a slot is only readable when its sequence matches the generation the reader expects:
+
+<Figure label="Fig 5" caption="Sequence-based ring buffer. Slot i starts at seq = i. A producer may write only where seq equals writePos; a consumer may read only where seq equals readPos + 1. Each slot carries its own atomic sequence, so contention spreads across the ring instead of two shared counters.">
+  <LfRing />
+</Figure>
+
+```go
+func (rb *RingBuffer[T]) Write(item T) error {
+	for {
+		writePos := rb.writePos.Load()
+		slot := &rb.buffer[writePos&rb.mask]
+		seq := slot.sequence.Load()
+		diff := int64(seq) - int64(writePos)
+
+		if diff == 0 { // slot is free at this generation
+			if rb.writePos.CompareAndSwap(writePos, writePos+1) {
+				slot.value = item
+				slot.sequence.Store(writePos + 1) // publish to readers
+				return nil
+			}
+		} else if diff < 0 {
+			return ErrBufferFull
+		}
+		// diff > 0: slot not drained yet, retry
+	}
+}
+```
+
+The `mask` is `capacity - 1`, so the buffer is always rounded up to a power of two and index math is a single AND instead of a modulo. Whether that per-slot scheme actually beats explicit padding on a given machine is a benchmarking question, not a proof, and it depends on cache topology, core count, and the producer/consumer ratio. The repo ships the benchmarks against a mutex baseline so you can measure it on your own hardware rather than trust a number I quote from mine.
+
+## The payoff: a green test suite is not a proof
+
+Here is the thing the algorithms taught me, and it is the same lesson I keep relearning from harnesses and consensus code: **passing tests, even race-detector tests, prove almost nothing about a lock-free structure.**
+
+Go's `-race` flag is a genuinely great tool, but understand exactly what it does. It watches an execution and flags *unsynchronized* access to shared memory. Every operation here goes through `atomic`, so the race detector sees valid synchronization and stays silent. It would stay just as silent if my Michael-Scott queue dropped an element or returned things out of order, because that is a *logic* bug, not a data race. A clean `-race` run tells you your accesses are synchronized. It says nothing about whether they are synchronized *correctly*.
+
+Unit tests are worse, because a lock-free bug is an interleaving bug. It surfaces only when two threads hit the CAS in one specific order out of millions, on one specific run, on one specific machine. You can run a green suite ten thousand times and never hit it. Absence of a failure is not evidence.
+
+So the real correctness check in this repo is a different kind of test entirely: a **model-checked linearizability test**. The property I actually care about is *linearizability*: every concurrent execution must be equivalent to *some* sequential execution that respects real-time ordering. If a dequeue returns before an enqueue started, that dequeue cannot see the enqueued value; within those constraints, there must exist a legal single-threaded order that explains what every thread observed.
+
+The test hammers the queue with several goroutines, records a **history** (every operation with its call and return timestamps and its result), and then hands that history to [porcupine](https://github.com/anishathalye/porcupine), a linearizability checker, along with a dead-simple **sequential model** of a queue:
+
+```go
+model := porcupine.Model{
+	Init: func() interface{} { return []int{} },
+	Step: func(state, input, output interface{}) (bool, interface{}) {
+		current := append([]int(nil), state.([]int)...)
+		in := input.(queueInput)
+		out := output.(queueOutput)
+
+		switch in.Op {
+		case "enqueue":
+			return out.OK, append(current, in.Value)
+		case "dequeue":
+			if len(current) == 0 {
+				return !out.OK, current // empty queue must report empty
+			}
+			// dequeue must return the front, in order
+			if !out.OK || out.Value != current[0] {
+				return false, state
+			}
+			return true, append([]int(nil), current[1:]...)
+		}
+		return false, state
+	},
+}
+
+if r := porcupine.CheckOperationsTimeout(model, history, 5*time.Second); r != porcupine.Ok {
+	t.Fatalf("queue history is not linearizable: %v", r)
+}
+```
+
+The model is a plain slice: a spec so obvious it is hard to get wrong. The checker's job is to search for *any* assignment of linearization points to the recorded concurrent history that the model accepts. If no such sequential order exists, the concurrent implementation violated its contract on that run, and the test fails with the offending history. This is the difference between "I didn't observe a bug" and "no sequential queue could have produced what I observed". The second one is a real refutation. It is the same discipline as checking work against ground truth you control rather than trusting the thing under test to grade itself.
+
+It is still not a formal proof. Porcupine checks the histories it is handed, so it only refutes bugs that actually manifested during the run, and a rare interleaving can still hide. To narrow that gap the repo pairs it with the boring-but-necessary layers: `-race` on every run, long soak tests that generate far more history, and a `verification/` package that writes the invariants and linearization points down in prose so the reasoning survives the next person who touches the code. Belt, suspenders, and a written argument for why the trousers stay up.
+
+## Where this actually goes
+
+The honest coda is that these structures are a study, not yet load-bearing infrastructure. My [greenthreads scheduler](https://github.com/sanskarpan/greenthreads) is exactly the kind of place a lock-free run queue belongs, per-worker deques with lock-free steal from the tail, and today its work-stealing scheduler still uses mutex-guarded local queues. That is a deliberate ordering: I wanted the Michael-Scott queue proven linearizable against a spec before I would trust it under a scheduler where a dropped fiber is a silent hang rather than a loud crash. A mutex I can reason about in an afternoon. A lock-free queue I trust only after a model checker has failed to break it a few million times, and even then I keep the sequential spec around so the next change has something to argue with.

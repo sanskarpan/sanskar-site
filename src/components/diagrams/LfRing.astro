@@ -1,0 +1,69 @@
+---
+// Vyukov-style sequence-based ring buffer. Eight slots, each carrying its own
+// atomic sequence number. Slot i starts at seq = i. A slot is writable when
+// seq == writePos and readable when seq == readPos + 1. writePos and readPos
+// are shown as cursors advancing left-to-right over the ring.
+//
+// Snapshot: writePos = 3, readPos = 1. Slots 1,2 hold published data
+// (seq = index + 1), slots 3..7 are still free at generation 0 (seq = index).
+const cells = [
+  { i: 0, seq: 8, state: 'drained' }, // consumed, republished to next gen (0 + cap)
+  { i: 1, seq: 2, state: 'ready' },   // written, seq = pos+1, readable at readPos=1
+  { i: 2, seq: 3, state: 'full' },    // written, waiting for a reader
+  { i: 3, seq: 3, state: 'write' },   // free at gen 0, seq == writePos -> writable
+  { i: 4, seq: 4, state: 'free' },
+  { i: 5, seq: 5, state: 'free' },
+  { i: 6, seq: 6, state: 'free' },
+  { i: 7, seq: 7, state: 'free' },
+];
+const x0 = 40;
+const cw = 74;
+const cy = 78;
+const ch = 58;
+const writeIdx = 3;
+const readIdx = 1;
+const cx = (i: number) => x0 + i * cw;
+---
+<svg class="dgm lf-ring" viewBox="0 0 632 246" role="img" aria-label="Sequence-based ring buffer. Eight slots each hold an atomic sequence number. A slot is writable when its sequence equals the write position and readable when its sequence equals the read position plus one. The producer cursor sits at slot 3, the consumer cursor at slot 1.">
+  <defs>
+    <marker id="lf-ring-ah" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" class="dgm-arrow" />
+    </marker>
+  </defs>
+
+  {cells.map((c) => (
+    <g>
+      <rect
+        x={cx(c.i)} y={cy} width={cw - 10} height={ch} rx="6"
+        class={`lf-slot lf-slot--${c.state}`}
+      />
+      <text x={cx(c.i) + (cw - 10) / 2} y={cy + 22} text-anchor="middle" class="lf-idx">i={c.i}</text>
+      <text x={cx(c.i) + (cw - 10) / 2} y={cy + 43} text-anchor="middle" class="lf-seq">seq {c.seq}</text>
+    </g>
+  ))}
+
+  {/* Producer cursor: points at slot 3, seq == writePos so it is writable */}
+  <line x1={cx(writeIdx) + (cw - 10) / 2} y1="40" x2={cx(writeIdx) + (cw - 10) / 2} y2={cy - 4} class="dgm-line dgm-line--accent" marker-end="url(#lf-ring-ah)" />
+  <text x={cx(writeIdx) + (cw - 10) / 2} y="30" text-anchor="middle" class="lf-cursor lf-cursor--accent">writePos 3</text>
+  <text x={cx(writeIdx) + (cw - 10) / 2} y="16" text-anchor="middle" class="lf-note lf-note--accent">seq == pos, write here</text>
+
+  {/* Consumer cursor: points at slot 1, seq == readPos+1 so it is readable */}
+  <line x1={cx(readIdx) + (cw - 10) / 2} y1={cy + ch + 4} x2={cx(readIdx) + (cw - 10) / 2} y2={cy + ch + 40} class="dgm-line" marker-end="url(#lf-ring-ah)" />
+  <text x={cx(readIdx) + (cw - 10) / 2} y={cy + ch + 58} text-anchor="middle" class="lf-cursor">readPos 1</text>
+  <text x={cx(readIdx) + (cw - 10) / 2} y={cy + ch + 72} text-anchor="middle" class="lf-note">seq == pos+1, read here</text>
+
+  <style>
+    .lf-slot { fill: var(--paper-2); stroke: var(--line); stroke-width: 1.4; }
+    .lf-slot--ready  { fill: color-mix(in srgb, var(--accent) 15%, var(--paper)); stroke: var(--accent); }
+    .lf-slot--full   { fill: color-mix(in srgb, var(--accent) 8%, var(--paper)); stroke: var(--ink-2); }
+    .lf-slot--write  { fill: var(--paper); stroke: var(--accent); stroke-width: 2; stroke-dasharray: 5 4; }
+    .lf-slot--free   { fill: var(--paper); stroke: var(--line); }
+    .lf-slot--drained{ fill: var(--paper); stroke: var(--line); opacity: 0.55; }
+    .lf-idx { fill: var(--ink); font-family: var(--font-mono); font-size: 12.5px; font-weight: 600; }
+    .lf-seq { fill: var(--ink-2); font-family: var(--font-mono); font-size: 12px; }
+    .lf-cursor { fill: var(--ink); font-family: var(--font-mono); font-size: 12.5px; font-weight: 600; }
+    .lf-cursor--accent { fill: var(--accent); }
+    .lf-note { fill: var(--muted); font-family: var(--font-mono); font-size: 10.5px; }
+    .lf-note--accent { fill: var(--accent); }
+  </style>
+</svg>

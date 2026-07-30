@@ -1,0 +1,71 @@
+---
+// Treiber stack: a singly linked list where head points at the top node.
+// Push builds newNode with next = old head, then CAS swings head to newNode.
+// Pop reads head, computes newHead = head.next, then CAS swings head forward.
+// The single CAS on head is the linearization point.
+const nx = 250;   // x of node B (current head)
+const ny = 108;
+const nw = 92;
+const nh = 44;
+---
+<svg class="dgm lf-treiber" viewBox="0 0 640 232" role="img" aria-label="Treiber stack. Head points at the top node of a singly linked list. Push links a new node ahead of the current head then swings head to it with one compare-and-swap. Pop swings head to head.next. That single compare-and-swap on head is the linearization point.">
+  <defs>
+    <marker id="lf-tr-ah" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" class="dgm-arrow" />
+    </marker>
+    <marker id="lf-tr-aha" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" class="lf-tr-arrow-accent" />
+    </marker>
+  </defs>
+
+  {/* head register */}
+  <rect x="24" y={ny} width="96" height={nh} rx="6" class="lf-reg" />
+  <text x="72" y={ny + 28} text-anchor="middle" class="lf-idx">head</text>
+
+  {/* new node being pushed, sits above */}
+  <rect x={nx} y="30" width={nw} height={nh} rx="6" class="lf-node lf-node--new" />
+  <text x={nx + nw / 2} y="54" text-anchor="middle" class="lf-idx">newNode</text>
+
+  {/* linked list: B -> A -> nil */}
+  <rect x={nx} y={ny} width={nw} height={nh} rx="6" class="lf-node lf-node--head" />
+  <text x={nx + nw / 2} y={ny + 28} text-anchor="middle" class="lf-idx">node B</text>
+
+  <rect x={nx + 150} y={ny} width={nw} height={nh} rx="6" class="lf-node" />
+  <text x={nx + 150 + nw / 2} y={ny + 28} text-anchor="middle" class="lf-idx">node A</text>
+
+  {/* head -> B (current) */}
+  <line x1="120" y1={ny + nh / 2} x2={nx - 4} y2={ny + nh / 2} class="dgm-line" marker-end="url(#lf-tr-ah)" />
+
+  {/* B.next -> A */}
+  <line x1={nx + nw} y1={ny + nh / 2} x2={nx + 150 - 4} y2={ny + nh / 2} class="dgm-line" marker-end="url(#lf-tr-ah)" />
+  <text x={nx + nw + 27} y={ny - 6} text-anchor="middle" class="lf-note">next</text>
+
+  {/* A.next -> nil */}
+  <line x1={nx + 150 + nw} y1={ny + nh / 2} x2={nx + 150 + nw + 40} y2={ny + nh / 2} class="dgm-line" marker-end="url(#lf-tr-ah)" />
+  <text x={nx + 150 + nw + 58} y={ny + nh / 2 + 4} class="lf-note">nil</text>
+
+  {/* push: newNode.next = head (B) */}
+  <path d={`M ${nx + nw / 2} ${30 + nh} L ${nx + nw / 2} ${ny - 4}`} class="lf-tr-line-accent" marker-end="url(#lf-tr-aha)" />
+  <text x={nx + nw / 2 - 66} y="94" text-anchor="middle" class="lf-note lf-note--accent">newNode.next = head</text>
+
+  {/* push CAS: head -> newNode */}
+  <path d={`M 72 ${ny} C 72 62, ${nx - 40} 52, ${nx - 4} 52`} class="lf-tr-line-accent" marker-end="url(#lf-tr-aha)" fill="none" />
+  <text x="150" y="74" text-anchor="middle" class="lf-note lf-note--accent">push: CAS head to newNode</text>
+
+  {/* pop CAS: head -> B.next (A) */}
+  <path d={`M 72 ${ny + nh} C 72 200, ${nx + 150 + nw / 2} 200, ${nx + 150 + nw / 2} ${ny + nh + 4}`} class="lf-tr-line-pop" marker-end="url(#lf-tr-ah)" fill="none" />
+  <text x="290" y="216" text-anchor="middle" class="lf-note">pop: CAS head to head.next (A)</text>
+
+  <style>
+    .lf-reg { fill: var(--paper-2); stroke: var(--ink); stroke-width: 1.4; }
+    .lf-node { fill: var(--paper); stroke: var(--ink-2); stroke-width: 1.4; }
+    .lf-node--head { fill: color-mix(in srgb, var(--accent) 8%, var(--paper)); stroke: var(--ink); }
+    .lf-node--new { fill: color-mix(in srgb, var(--accent) 13%, var(--paper)); stroke: var(--accent); stroke-dasharray: 5 4; }
+    .lf-idx { fill: var(--ink); font-family: var(--font-mono); font-size: 12.5px; font-weight: 600; }
+    .lf-note { fill: var(--muted); font-family: var(--font-mono); font-size: 10.5px; }
+    .lf-note--accent { fill: var(--accent); }
+    .lf-tr-line-accent { stroke: var(--accent); stroke-width: 1.6; fill: none; }
+    .lf-tr-line-pop { stroke: var(--ink-2); stroke-width: 1.4; fill: none; stroke-dasharray: 4 4; }
+    .lf-tr-arrow-accent { fill: var(--accent); }
+  </style>
+</svg>

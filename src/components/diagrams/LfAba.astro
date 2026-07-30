@@ -1,0 +1,100 @@
+---
+// ABA as a memory-reuse bug, shown as a memory view.
+// Top track (naive CAS): Thread 1 reads head = 0x40 (node A). A is popped and
+// freed; a brand new node is allocated at the SAME address 0x40. head reads 0x40
+// again, so Thread 1's CAS(head, 0x40, ...) succeeds against a node it never saw.
+// Bottom track (fix): the pointer carries a version tag. The reused address is
+// 0x40 but the tag advanced from 7 to 9, so CAS({0x40,7}, ...) fails as it must.
+---
+<svg class="dgm lf-aba" viewBox="0 0 640 356" role="img" aria-label="ABA memory reuse. A naive compare-and-swap only checks the address, so when a freed node is reallocated at the same address the stale swap wrongly succeeds. A versioned pointer detects reuse because the tag advanced, so the compare-and-swap fails.">
+  <defs>
+    <marker id="lf-aba-ah" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" class="dgm-arrow" />
+    </marker>
+    <marker id="lf-aba-ahr" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" class="lf-arrow-bad" />
+    </marker>
+  </defs>
+
+  {/* ---- Naive track ---- */}
+  <text x="20" y="24" class="lf-track">Naive CAS checks the address only</text>
+
+  {/* head register, naive */}
+  <rect x="20" y="40" width="120" height="46" rx="6" class="lf-reg" />
+  <text x="80" y="60" text-anchor="middle" class="lf-idx">head</text>
+  <text x="80" y="77" text-anchor="middle" class="lf-seq">0x40</text>
+
+  {/* T1 read snapshot */}
+  <text x="20" y="112" class="lf-note">T1 read: head = 0x40</text>
+
+  {/* memory cell before */}
+  <rect x="200" y="40" width="180" height="46" rx="6" class="lf-mem" />
+  <text x="290" y="60" text-anchor="middle" class="lf-idx">node A</text>
+  <text x="290" y="78" text-anchor="middle" class="lf-note">@ 0x40 · next 0x60</text>
+
+  <line x1="140" y1="63" x2="196" y2="63" class="dgm-line" marker-end="url(#lf-aba-ah)" />
+
+  {/* free + realloc arrow */}
+  <line x1="290" y1="86" x2="290" y2="122" class="lf-line-bad" marker-end="url(#lf-aba-ahr)" />
+  <text x="300" y="108" class="lf-note lf-note--bad">free A, then malloc reuses 0x40</text>
+
+  {/* memory cell after realloc */}
+  <rect x="200" y="126" width="180" height="46" rx="6" class="lf-mem lf-mem--bad" />
+  <text x="290" y="146" text-anchor="middle" class="lf-idx">node X (new)</text>
+  <text x="290" y="164" text-anchor="middle" class="lf-note">@ 0x40 · next 0x90</text>
+
+  {/* T1 CAS wrongly succeeds */}
+  <rect x="420" y="126" width="200" height="46" rx="6" class="lf-verdict lf-verdict--bad" />
+  <text x="520" y="146" text-anchor="middle" class="lf-idx lf-idx--bad">CAS 0x40 == 0x40, ok</text>
+  <text x="520" y="164" text-anchor="middle" class="lf-note lf-note--bad">stale swap succeeds, corrupt</text>
+  <line x1="380" y1="149" x2="416" y2="149" class="lf-line-bad" marker-end="url(#lf-aba-ahr)" />
+
+  {/* divider */}
+  <line x1="20" y1="204" x2="620" y2="204" class="lf-divider" />
+
+  {/* ---- Fixed track ---- */}
+  <text x="20" y="234" class="lf-track lf-track--accent">Tagged pointer also checks the version</text>
+
+  {/* head register, tagged */}
+  <rect x="20" y="250" width="120" height="46" rx="6" class="lf-reg lf-reg--accent" />
+  <text x="80" y="270" text-anchor="middle" class="lf-idx">head</text>
+  <text x="80" y="287" text-anchor="middle" class="lf-seq lf-seq--accent">0x40 · tag 9</text>
+
+  <text x="20" y="322" class="lf-note">T1 read: 0x40 · tag 7</text>
+
+  {/* reused address, new tag */}
+  <rect x="200" y="250" width="180" height="46" rx="6" class="lf-mem lf-mem--accent" />
+  <text x="290" y="270" text-anchor="middle" class="lf-idx">node X (new)</text>
+  <text x="290" y="288" text-anchor="middle" class="lf-note lf-note--accent">@ 0x40 · tag 7 to 9</text>
+  <line x1="140" y1="273" x2="196" y2="273" class="dgm-line dgm-line--accent" marker-end="url(#lf-aba-ah)" />
+
+  {/* CAS fails, correct */}
+  <rect x="420" y="250" width="200" height="46" rx="6" class="lf-verdict lf-verdict--accent" />
+  <text x="520" y="270" text-anchor="middle" class="lf-idx lf-idx--accent">CAS tag 7 != tag 9, fail</text>
+  <text x="520" y="288" text-anchor="middle" class="lf-note lf-note--accent">T1 retries, safe</text>
+  <line x1="380" y1="273" x2="416" y2="273" class="dgm-line dgm-line--accent" marker-end="url(#lf-aba-ah)" />
+
+  <style>
+    .lf-track { fill: var(--ink); font-family: var(--font-display); font-size: 15px; font-weight: 500; }
+    .lf-track--accent { fill: var(--accent); }
+    .lf-reg { fill: var(--paper-2); stroke: var(--ink); stroke-width: 1.4; }
+    .lf-reg--accent { stroke: var(--accent); }
+    .lf-mem { fill: var(--paper); stroke: var(--ink-2); stroke-width: 1.4; }
+    .lf-mem--bad { stroke: var(--accent); stroke-dasharray: 5 4; }
+    .lf-mem--accent { fill: color-mix(in srgb, var(--accent) 10%, var(--paper)); stroke: var(--accent); }
+    .lf-verdict { fill: var(--paper); stroke: var(--ink-2); stroke-width: 1.4; }
+    .lf-verdict--bad { fill: color-mix(in srgb, var(--accent) 12%, var(--paper)); stroke: var(--accent); }
+    .lf-verdict--accent { fill: color-mix(in srgb, var(--accent) 12%, var(--paper)); stroke: var(--accent); }
+    .lf-idx { fill: var(--ink); font-family: var(--font-mono); font-size: 12.5px; font-weight: 600; }
+    .lf-idx--bad { fill: var(--accent); }
+    .lf-idx--accent { fill: var(--accent); }
+    .lf-seq { fill: var(--ink-2); font-family: var(--font-mono); font-size: 12px; }
+    .lf-seq--accent { fill: var(--accent); }
+    .lf-note { fill: var(--muted); font-family: var(--font-mono); font-size: 10.5px; }
+    .lf-note--bad { fill: var(--accent); }
+    .lf-note--accent { fill: var(--accent); }
+    .lf-line-bad { stroke: var(--accent); stroke-width: 1.4; fill: none; stroke-dasharray: 5 4; }
+    .lf-arrow-bad { fill: var(--accent); }
+    .lf-divider { stroke: var(--line); stroke-width: 1; }
+  </style>
+</svg>
