@@ -1,0 +1,59 @@
+---
+// Double-entry posting for a captured payment of 4200 paise (INR 42.00).
+// Real accounts and split from internal/payment/postgres.go capturePaymentTx:
+//   DEBIT  CUSTOMER_RECEIVABLE  = amount        (4200)
+//   CREDIT PLATFORM_FEE_REVENUE = amount*2/100  (84)
+//   CREDIT MERCHANT_PAYABLE     = residual      (4116)
+// Debits (4200) equal Credits (84 + 4116 = 4200): the ledger invariant.
+---
+<svg class="dgm pay-tacct" viewBox="0 0 680 288" role="img" aria-label="Double-entry posting for a 4200 paise captured payment. Debit CUSTOMER_RECEIVABLE 4200. Credit PLATFORM_FEE_REVENUE 84 and MERCHANT_PAYABLE 4116. Total debits 4200 equal total credits 4200.">
+  <!-- column headers -->
+  <text x="24" y="30" class="dgm-title">Debit</text>
+  <text x="656" y="30" text-anchor="end" class="dgm-title">Credit</text>
+
+  <!-- central T divider -->
+  <line x1="340" y1="16" x2="340" y2="236" class="pay-tacct-div" />
+  <line x1="24" y1="46" x2="656" y2="46" class="pay-tacct-rule" />
+
+  <!-- DEBIT side: one row -->
+  <text x="24" y="80" class="dgm-label">CUSTOMER_RECEIVABLE</text>
+  <text x="24" y="98" class="dgm-sub">money owed by customer · asset</text>
+  <text x="316" y="86" text-anchor="end" class="pay-tacct-amt">4200</text>
+
+  <!-- CREDIT side: two rows -->
+  <text x="364" y="80" class="dgm-label">PLATFORM_FEE_REVENUE</text>
+  <text x="364" y="98" class="dgm-sub">commission 2 percent · revenue</text>
+  <text x="656" y="86" text-anchor="end" class="pay-tacct-amt">84</text>
+
+  <text x="364" y="140" class="dgm-label">MERCHANT_PAYABLE</text>
+  <text x="364" y="158" class="dgm-sub">money owed to merchant · liability</text>
+  <text x="656" y="146" text-anchor="end" class="pay-tacct-amt">4116</text>
+
+  <!-- totals rule -->
+  <line x1="24" y1="196" x2="656" y2="196" class="pay-tacct-rule" />
+  <text x="24" y="224" class="dgm-sub dgm-sub--accent">total debit</text>
+  <text x="316" y="224" text-anchor="end" class="pay-tacct-amt pay-tacct-amt--accent">4200</text>
+  <text x="364" y="224" class="dgm-sub dgm-sub--accent">total credit</text>
+  <text x="656" y="224" text-anchor="end" class="pay-tacct-amt pay-tacct-amt--accent">4200</text>
+
+  <!-- invariant callout -->
+  <text x="340" y="268" text-anchor="middle" class="pay-tacct-eq">debit 4200 = credit 4200 · checked before insert</text>
+</svg>
+
+<style>
+  .pay-tacct-div { stroke: var(--ink); stroke-width: 1.6; }
+  .pay-tacct-rule { stroke: var(--line); stroke-width: 1.2; }
+  .pay-tacct-amt {
+    fill: var(--ink);
+    font-family: var(--font-mono);
+    font-size: 15px;
+    font-weight: 500;
+  }
+  .pay-tacct-amt--accent { fill: var(--accent); }
+  .pay-tacct-eq {
+    fill: var(--accent);
+    font-family: var(--font-mono);
+    font-size: 12.5px;
+    letter-spacing: 0.02em;
+  }
+</style>

@@ -1,0 +1,212 @@
+---
+title: Building a payment system without dual-write hell
+description: "A payment write and the event that announces it are two operations, and the gap between them is where money goes wrong. Here is how I removed that gap: transactional outbox, idempotency reserved before execution, explicit state machines, sagas with compensations, and three-way reconciliation."
+date: 2026-07-22
+tags: ['go', 'backend', 'distributed-systems']
+draft: true
+---
+
+import Mermaid from '../../components/Mermaid.astro';
+import Figure from '../../components/diagrams/Figure.astro';
+import PayTAccount from '../../components/diagrams/PayTAccount.astro';
+import PayCommitContrast from '../../components/diagrams/PayCommitContrast.astro';
+
+The most dangerous line of code in a naive payment service is the one right after the commit: you write the payment row, the transaction succeeds, and then you publish `payment.captured` to the broker so webhooks fire and settlement picks it up. Two operations. Between them, a process can crash, the broker can be down, the network can drop. Now the database says captured and nobody downstream knows, or worse, the publish succeeded and the commit rolled back and you have announced money that does not exist.
+
+That is the dual-write problem, and it is the whole reason PayGate is shaped the way it is. I built it in Go as a modular monolith with strict package boundaries, one Postgres transaction on the money path, and a set of patterns whose entire job is to make sure state and the events describing that state can never disagree. I want to be precise about what it is: a rigorous reference implementation with heavy design docs and a real test suite, not a processor that has moved real money at scale. The [foundation review](https://github.com/sanskarpan/PayGate) in the repo says as much in plain language, and I am keeping that honesty here. The patterns are the point.
+
+## The dual-write problem
+
+Two writes to two systems cannot be made atomic by hoping. Any interleaving where one succeeds and the other does not leaves you corrupt.
+
+<Mermaid label="Fig 1" caption="Two independent writes. Every partial-failure path leaves the database and the broker disagreeing about what happened." chart={`
+flowchart TB
+  S["capture handler"] --> DB["write payment row<br/>commit"]
+  S --> BK["publish event<br/>to broker"]
+  DB -.->|commit ok<br/>publish fails| L1["state captured<br/>no one notified"]
+  BK -.->|publish ok<br/>commit rolls back| L2["event announced<br/>payment does not exist"]
+`} />
+
+You cannot wrap a database transaction and a broker publish in one atomic unit without a distributed transaction, and a distributed transaction across Postgres and Kafka is both operationally heavy and a way to make Kafka's availability a hard dependency of your ability to take a payment. If the broker is down, you should still be able to capture. You just should not lose the event.
+
+## The transactional outbox
+
+The fix is to stop treating the event as a second write to a second system. On the money path there is exactly one system: Postgres. The event becomes a row in an `outbox` table, inserted inside the same transaction as the domain change. One commit, two rows, atomic by construction.
+
+<Figure label="Fig 2" caption="The move in one picture. The dual write leaves a failure gap between the commit and the publish. The outbox folds the event into the same transaction as the payment and ledger rows, and a relay ships it to the broker afterward.">
+  <PayCommitContrast />
+</Figure>
+
+```go
+func (w *Writer) WriteTx(ctx context.Context, tx pgx.Tx, event Event) error {
+    payload, err := json.Marshal(event.Payload)
+    if err != nil {
+        return fmt.Errorf("marshal outbox payload: %w", err)
+    }
+    _, err = tx.Exec(ctx, `
+INSERT INTO public.outbox (id, aggregate_type, aggregate_id, event_type, payload, merchant_id)
+VALUES ($1, $2, $3, $4, $5, $6)`,
+        event.ID, event.AggregateType, event.AggregateID,
+        event.EventType, payload, event.MerchantID)
+    return err
+}
+```
+
+Note the signature: `WriteTx` takes a `pgx.Tx`, not a pool. It cannot open its own transaction. It has to be handed the same transaction that updated the payment, the ledger, and the audit trail, so the outbox row is bound to their fate. Either the payment is captured and the event exists, or neither is true. There is no window.
+
+A separate process, the relay, ships those rows to the broker after the fact.
+
+<Mermaid label="Fig 3" caption="One commit writes the domain rows and the outbox row together. The relay drains outbox rows to the broker independently, at least once." chart={`
+flowchart LR
+  H["capture handler"] --> TX["single Postgres tx"]
+  TX --> P["payment row"]
+  TX --> LG["ledger entries"]
+  TX --> OB["outbox row"]
+  R["relay<br/>background loop"] -->|poll unpublished| OB
+  R -->|publish| BK["broker"]
+  R -->|set published_at| OB
+`} />
+
+The relay polls unpublished rows with `SELECT ... FOR UPDATE SKIP LOCKED`, publishes each, then stamps `published_at = NOW()`. `SKIP LOCKED` is what lets you run more than one relay without them fighting over the same rows: each instance grabs a disjoint batch and moves on. Delivery is at-least-once, on purpose. If the relay publishes and then dies before stamping the row, it will publish that row again on restart. That is a deliberate trade: I would rather send an event twice than lose it once, which pushes the dedup responsibility downstream where it belongs.
+
+A few operational details that the docs are honest about and I did not want to paper over. The outbox grows unboundedly if you never clean it, so the relay deletes published rows older than seven days on each pass. It publishes with a small bounded retry before giving up on a batch, and it backs its poll interval off from one second toward thirty when the table has been empty for a while, so an idle system is not hammering Postgres. The cost of the whole pattern is latency: events arrive eventually, not instantly, typically under a second of relay lag. For payments that is fine. Nothing on the synchronous path waits for the broker.
+
+## Idempotency: reserve before you execute
+
+Clients retry. A capture times out, the client resends, and if you are not careful you capture twice. The naive version stores the result after processing so you can replay it, which does nothing for two requests racing at the same instant, because neither has stored anything yet.
+
+The rule that makes it work is that the idempotency key is reserved before execution, not after. The middleware calls `store.Start` before the handler runs, and that call is the arbiter. It returns one of a small set of decisions, and the three that matter map cleanly to the three real cases:
+
+- **New.** No prior record. `Start` inserts a row marking this key in progress and the request proceeds. When it finishes, the response is recorded against the key.
+- **Already completed.** A record exists with a stored response. The middleware replays it verbatim, sets `Idempotent-Replayed: true`, and never touches the handler. The retry gets the original answer, not a second charge.
+- **In progress.** A record exists but no response yet, meaning a concurrent request is mid-flight. The middleware returns `409` with `Retry-After` rather than running the handler again. The second caller waits instead of double-executing.
+
+There is a fourth decision worth naming because it catches a real bug: **conflict.** If the same key arrives with a different request body (a client reusing a key for a different operation), `Start` rejects it outright. An idempotency key is a promise that this is the same request, and silently running a different one under that promise is worse than an error.
+
+Underneath, the store is two-tier. Redis holds a short-lived `SET NX` lock for the fast concurrent-duplicate check on the hot path, and Postgres holds the durable record for replay after the Redis entry expires, with a fallback to Postgres-only if Redis is down. The honest downside, and it is written into the design decision: responses are replayed exactly, so a `500` on the first attempt also replays for the retention window. Transient errors stick. I decided that predictability beats cleverness here.
+
+## Explicit state machines, not implicit ones
+
+A payment is not a boolean. It is `created`, then maybe `requires_action`, `processing`, `authorized`, `captured`, `failed`, `authorization_reversed`, `auto_refunded`. The bugs live in the transitions: capturing something that was never authorized, reversing a capture, authorizing twice. The way to make those bugs unrepresentable is to write the transition table down and reject anything not in it.
+
+```go
+func Transition(from PaymentState, ev PaymentEvent) (PaymentState, error) {
+    table := map[PaymentState]map[PaymentEvent]PaymentState{
+        StateCreated: {
+            EventAuthSuccess:            StateAuthorized,
+            EventAuthFailed:             StateFailed,
+            EventCustomerActionRequired: StateRequiresAction,
+        },
+        StateAuthorized: {
+            EventCapture:       StateCaptured,
+            EventAuthReversed:  StateAuthorizationReversed,
+            EventCaptureExpiry: StateAutoRefunded,
+        },
+        // ...
+    }
+    m, ok := table[from]
+    if !ok {
+        return "", ErrInvalidTransition
+    }
+    next, ok := m[ev]
+    if !ok {
+        return "", ErrInvalidTransition
+    }
+    return next, nil
+}
+```
+
+That table is the whole state machine drawn out. Every arrow below is an entry in the map; every arrow that is not drawn is an `ErrInvalidTransition`.
+
+<Mermaid label="Fig 4" caption="The real payment transition table from domain.go. Only the drawn edges exist. There is no arrow from created to captured, so a stray capture there is rejected at the point of attempt." chart={`
+stateDiagram-v2
+  [*] --> created
+  created --> authorized: auth_success
+  created --> requires_action: action_required
+  created --> failed: auth_failed
+  requires_action --> authorized: action_complete
+  requires_action --> failed: auth_failed
+  pending_customer_action --> processing: processing_started
+  pending_customer_action --> captured: capture
+  pending_customer_action --> failed: auth_failed
+  processing --> captured: capture
+  processing --> failed: auth_failed
+  authorized --> captured: capture
+  authorized --> authorization_reversed: auth_reversed
+  authorized --> auto_refunded: capture_expiry
+  captured --> [*]
+`} />
+
+There is no path from `created` to `captured`. You cannot express it. A capture event against a `created` payment returns `ErrInvalidTransition` and the write never happens. Every entity with a lifecycle (payments, refunds, webhook subscriptions, sagas) has its own table like this. The tables are boring, and boring is the goal: an illegal state change fails loudly at the point of attempt instead of quietly corrupting a row you discover during reconciliation three days later.
+
+## Double-entry ledger as the invariant
+
+The state machine governs the payment. The ledger governs the money, and it holds one invariant above all others: for any transaction, debits equal credits.
+
+```go
+func ValidateEntries(entries []Entry) error {
+    var debit, credit int64
+    for _, e := range entries {
+        debit += e.DebitAmount
+        credit += e.CreditAmount
+    }
+    if debit != credit {
+        return ErrUnbalancedEntries
+    }
+    return nil
+}
+```
+
+Every monetary flow produces a balanced set of entries against named accounts: `CUSTOMER_RECEIVABLE`, `MERCHANT_PAYABLE`, `PLATFORM_FEE_REVENUE`. Capturing a payment posts one debit against two credits, and the whole set has to net to zero.
+
+<Figure label="Fig 5" caption="Capturing a 4200 paise payment at a 2 percent platform fee. The full amount is debited to the customer receivable; it is credited out as fee revenue and merchant payable. Debits equal credits, or the insert is refused.">
+  <PayTAccount />
+</Figure>
+
+The ledger is append-only. Rows are never updated or deleted, which means any account balance is just `SUM(credit) - SUM(debit)` at whatever point in time you ask, and the history can always be reconstructed. The important property is when the check runs: `ValidateEntries` runs before insert, inside the same transaction as the payment and the outbox row. An entry-construction bug is caught at write time, not discovered later as a mystery imbalance. And because the ledger entries share the transaction with the payment state change and the outbox event, all four are one atomic fact.
+
+## Sagas for the multi-step flows
+
+Not everything fits in one transaction. A payout touches a ledger hold, a payout rail, and settlement, some of it across boundaries you would eventually want to extract into separate services. You cannot hold a database transaction open across a network call to a bank rail, so atomicity gives way to a saga: a sequence of steps, each with a compensating action that undoes it, and a persisted state machine driving the whole thing forward or backward.
+
+<Mermaid label="Fig 6" caption="A saga advances step by step. On a step failure it reverses, running the compensation for each completed step, and dead-letters what it cannot resolve." chart={`
+flowchart TB
+  Start["saga running"] --> S1["step 1<br/>reserve hold"]
+  S1 --> S2["step 2<br/>dispatch payout"]
+  S2 --> S3["step 3<br/>finalize settlement"]
+  S3 --> Done["completed"]
+  S2 -.->|command fails| C["compensating"]
+  C --> R1["release hold"]
+  C --> Aborted["aborted"]
+  C -.->|compensation fails| DLQ["dead letter"]
+`} />
+
+The saga instance carries an explicit `Status` (`pending`, `running`, `waiting`, `compensating`, `completed`, `failed`, `aborted`) and each step carries its own status and an attempt count against a max. Commands are dispatched with their own idempotent identity and a lease, so a crashed orchestrator can be recovered by another worker picking up the lease rather than re-running completed steps. When a step exhausts its retries or a compensation itself fails, the work does not vanish: it lands in a dead-letter table classified by type (`command_failed`, `timeout`, `compensation_failed`, `override`) for an operator to inspect and replay. The saga is how you get "all or nothing" semantics across steps that genuinely cannot share a transaction, without pretending distributed atomicity is free.
+
+## Webhooks: signed, retried, dead-lettered, replayable
+
+Webhooks are the same delivery problem as the outbox, one hop further out, against endpoints you do not control. The design assumes the receiver is flaky.
+
+Every payload is signed with HMAC-SHA256 under the subscription's secret and sent as an `X-PayGate-Signature: sha256=...` header (with an HTTP Message Signatures mode available too), so the merchant can verify the event actually came from PayGate and was not tampered with. A `5xx` or a network error is a failed delivery, not a crash: the attempt is recorded, and a retry worker leases due attempts (again with `FOR UPDATE SKIP LOCKED`) and re-delivers on a backoff schedule. An event that fails every attempt, up to eighteen, is moved to `dead_lettered` rather than retried forever. Dead-lettered and failed deliveries can be explicitly replayed, which is the operational escape hatch: a merchant who had an outage brings their endpoint back and asks for the events they missed. Because outbox delivery is at-least-once and webhooks inherit that, the signature-verified payload carries a stable event id, and consumers are told to dedup on it.
+
+## Three-way reconciliation
+
+All of the above reduces the odds of drift. It does not eliminate it, and a payment system that assumes it never drifts is lying. So there is a reconciliation worker whose whole job is to assume something is already wrong and go find it.
+
+<Mermaid label="Fig 7" caption="Reconciliation compares three independent records of the same money and classifies every disagreement rather than just flagging a count." chart={`
+flowchart LR
+  PAY["payment records"] --- CHK{"compare"}
+  LG["ledger entries"] --- CHK
+  SET["settlement items"] --- CHK
+  CHK --> OK["balanced"]
+  CHK --> M["classified mismatch"]
+  M --> Q["operator queue<br/>assign and resolve"]
+`} />
+
+It runs three-way across payment, ledger, and settlement, and it does not just report a mismatch count. It classifies each discrepancy into a named type: `ledger_imbalance` (debits and credits do not net to zero for a merchant), `payment_missing_ledger` (a captured payment with no ledger entries), `payment_amount_mismatch` (the ledger sum for a payment differs from the payment amount), `settlement_payment_mismatch`, `orphan_settlement_item` (a settlement item pointing at a payment that is not there), and a set of external-source types for when an imported statement from a rail does not line up with internal records. Each mismatch becomes a tracked row that can be assigned, annotated, and resolved with a resolution code. Classification is what makes it actionable: "seventeen mismatches" is an alarm, "one orphan settlement item on merchant X" is a ticket someone can close.
+
+## What this actually buys
+
+The through-line is that every one of these patterns is really the same move applied at a different layer. Collapse two writes into one transaction where you can (outbox, ledger, state change). Where you cannot (sagas, webhooks), accept at-least-once delivery and make everything downstream idempotent and replayable. Then, because none of that is perfect, reconcile independent records against each other and classify the drift you find.
+
+I will keep saying it plainly: this is a reference implementation with strong docs and real tests, not a battle-tested production processor, and the difference between those two is mostly time and traffic that this project has not seen. But the primitives are the ones a real processor needs, and building them end to end taught me the thing you cannot get from reading about the outbox pattern: the hard part was never the pattern, it was being disciplined about the transaction boundary every single time, on every path, with no exceptions. The [code is on GitHub](https://github.com/sanskarpan/PayGate). The design docs are the part I would read first.

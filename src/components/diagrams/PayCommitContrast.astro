@@ -1,0 +1,75 @@
+---
+// Before / after of the outbox move. Left: a dual write, where the DB commit and
+// the broker publish are two operations with a failure gap between them. Right:
+// the outbox, where the domain rows and the event row are one Postgres commit,
+// atomic by construction. See internal/outbox writer WriteTx.
+---
+<svg class="dgm pay-contrast" viewBox="0 0 680 300" role="img" aria-label="Before and after. Before, a dual write splits into a database commit and a broker publish with a failure gap between them. After, one Postgres transaction writes the payment, ledger and outbox rows atomically, and a relay ships the outbox row to the broker later.">
+  <defs>
+    <marker id="pc-ah" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" class="dgm-arrow" />
+    </marker>
+    <marker id="pc-ah-a" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" class="pay-contrast-arrow-a" />
+    </marker>
+  </defs>
+
+  <!-- BEFORE -->
+  <text x="14" y="22" class="dgm-sub">before · dual write</text>
+  <rect x="14" y="34" width="120" height="42" rx="8" class="dgm-box" />
+  <text x="74" y="60" text-anchor="middle" class="dgm-label">handler</text>
+
+  <rect x="14" y="108" width="120" height="42" rx="8" class="dgm-box" />
+  <text x="74" y="134" text-anchor="middle" class="dgm-label">DB commit</text>
+
+  <rect x="14" y="182" width="120" height="42" rx="8" class="dgm-box dgm-box--dashed" />
+  <text x="74" y="208" text-anchor="middle" class="dgm-label">broker publish</text>
+
+  <line x1="74" y1="76" x2="74" y2="108" class="dgm-line" marker-end="url(#pc-ah)" />
+  <line x1="74" y1="150" x2="74" y2="182" class="pay-contrast-gap" marker-end="url(#pc-ah)" />
+  <text x="88" y="170" class="pay-contrast-warn">gap</text>
+  <text x="14" y="252" class="pay-contrast-warn">crash here</text>
+  <text x="14" y="270" class="dgm-sub">state and event disagree</text>
+
+  <!-- AFTER -->
+  <text x="300" y="22" class="dgm-sub dgm-sub--accent">after · outbox</text>
+  <rect x="300" y="34" width="120" height="42" rx="8" class="dgm-box" />
+  <text x="360" y="60" text-anchor="middle" class="dgm-label">handler</text>
+
+  <!-- single tx envelope -->
+  <rect x="300" y="100" width="366" height="108" rx="10" class="dgm-box dgm-box--accent" />
+  <text x="316" y="122" class="dgm-sub dgm-sub--accent">single Postgres tx · one commit</text>
+  <rect x="316" y="134" width="106" height="58" rx="7" class="pay-contrast-inner" />
+  <text x="369" y="160" text-anchor="middle" class="dgm-label">payment</text>
+  <text x="369" y="178" text-anchor="middle" class="dgm-sub">row</text>
+  <rect x="430" y="134" width="106" height="58" rx="7" class="pay-contrast-inner" />
+  <text x="483" y="160" text-anchor="middle" class="dgm-label">ledger</text>
+  <text x="483" y="178" text-anchor="middle" class="dgm-sub">entries</text>
+  <rect x="544" y="134" width="106" height="58" rx="7" class="pay-contrast-inner" />
+  <text x="597" y="160" text-anchor="middle" class="dgm-label">outbox</text>
+  <text x="597" y="178" text-anchor="middle" class="dgm-sub">row</text>
+
+  <line x1="360" y1="76" x2="360" y2="100" class="dgm-line dgm-line--accent" marker-end="url(#pc-ah-a)" />
+
+  <!-- relay ships later -->
+  <rect x="300" y="240" width="150" height="42" rx="8" class="dgm-box" />
+  <text x="375" y="266" text-anchor="middle" class="dgm-label">relay loop</text>
+  <rect x="516" y="240" width="134" height="42" rx="8" class="dgm-box" />
+  <text x="583" y="266" text-anchor="middle" class="dgm-label">broker</text>
+
+  <line x1="597" y1="192" x2="450" y2="240" class="dgm-line" marker-end="url(#pc-ah)" />
+  <text x="470" y="228" class="dgm-sub">poll unpublished</text>
+  <line x1="450" y1="261" x2="516" y2="261" class="dgm-line" marker-end="url(#pc-ah)" />
+</svg>
+
+<style>
+  .pay-contrast-inner { fill: var(--paper); stroke: var(--accent); stroke-width: 1.2; }
+  .pay-contrast-gap { stroke: var(--accent); stroke-width: 1.6; stroke-dasharray: 4 4; fill: none; }
+  .pay-contrast-arrow-a { fill: var(--accent); }
+  .pay-contrast-warn {
+    fill: var(--accent);
+    font-family: var(--font-mono);
+    font-size: 11.5px;
+    font-weight: 500;
+  }
+</style>
