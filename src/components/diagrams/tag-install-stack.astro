@@ -1,0 +1,78 @@
+---
+// The Python edition's install stack (three runtimes provisioned at first run)
+// versus the native Go edition (one self-contained static binary).
+// "Before" layers, top to bottom, follow the distribution-problem section:
+//   npm Node launcher -> system Python 3.11-3.13 -> venv built via live pip
+//   -> vendored Hermes tarball. A visibly tall, fragile stack.
+// "After" is a single Go static binary, CGO_ENABLED=0.
+const before = [
+  { name: 'npm Node launcher', sub: 'bin/tag.js · engines >= 20' },
+  { name: 'system Python 3.11-3.13', sub: 'detected · Windows py shim' },
+  { name: 'venv built via live pip', sub: 'network-dependent first run' },
+  { name: 'vendored Hermes tarball', sub: 'unpacked into the venv' },
+];
+const colW = 300;
+const bx = 20;       // before column x
+const ax = 360;      // after column x
+const top = 58;
+const layerH = 52;
+const gap = 10;
+const height = top + before.length * (layerH + gap) + 24;
+---
+<svg class="dgm tag-is" viewBox={`0 0 680 ${height}`} role="img"
+     aria-label="Before, the Python edition stacks four runtimes: an npm Node launcher on top of a system Python 3.11 to 3.13, which builds a venv via live pip, which unpacks a vendored Hermes tarball. After, one self-contained Go static binary replaces the whole stack.">
+  <!-- column headers -->
+  <text x={bx} y="26" class="dgm-title">Before · Python edition</text>
+  <text x={bx} y="44" class="dgm-sub">four runtimes, provisioned on first run</text>
+  <text x={ax} y="26" class="dgm-title tag-is-after-h">After · native Go</text>
+  <text x={ax} y="44" class="dgm-sub">one self-contained artifact</text>
+
+  <!-- BEFORE: the tall stack -->
+  {before.map((l, i) => {
+    const y = top + i * (layerH + gap);
+    return (
+      <g>
+        <rect x={bx} y={y} width={colW} height={layerH} rx="7" class="dgm-box tag-is-frag" />
+        <text x={bx + 16} y={y + 22} class="dgm-label">{l.name}</text>
+        <text x={bx + 16} y={y + 39} class="dgm-sub">{l.sub}</text>
+        {i < before.length - 1 && (
+          <text x={bx + colW - 16} y={y + layerH + gap - 1} text-anchor="end" class="tag-is-onto">shells out to</text>
+        )}
+      </g>
+    );
+  })}
+  <text x={bx} y={height - 6} class="dgm-sub tag-is-cost">3 languages · 2 update paths</text>
+
+  <!-- AFTER: single binary, vertically centered against the stack -->
+  {(() => {
+    const stackH = before.length * (layerH + gap) - gap;
+    const binH = 96;
+    const binY = top + (stackH - binH) / 2;
+    return (
+      <g>
+        <rect x={ax} y={binY} width={colW} height={binH} rx="9" class="dgm-box dgm-box--accent tag-is-bin" />
+        <text x={ax + colW / 2} y={binY + 34} text-anchor="middle" class="dgm-title tag-is-bin-t">Go static binary</text>
+        <text x={ax + colW / 2} y={binY + 56} text-anchor="middle" class="dgm-sub">CGO_ENABLED=0 · owns its runtime</text>
+        <text x={ax + colW / 2} y={binY + 78} text-anchor="middle" class="dgm-sub dgm-sub--accent">no Node · no Python · no venv</text>
+        <text x={ax} y={height - 6} class="dgm-sub tag-is-cost">1 file · 1 update path · offline</text>
+      </g>
+    );
+  })()}
+</svg>
+
+<style>
+  .tag-is-frag { stroke-dasharray: 3 3; }
+  .tag-is-onto {
+    fill: var(--muted);
+    font-family: var(--font-mono);
+    font-size: 11px;
+    letter-spacing: 0.02em;
+  }
+  .tag-is-cost {
+    font-family: var(--font-mono);
+    font-size: 11.5px;
+  }
+  .tag-is-bin { stroke-width: 1.8; }
+  .tag-is-bin-t { fill: var(--accent); }
+  .tag-is-after-h { fill: var(--accent); }
+</style>

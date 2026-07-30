@@ -1,0 +1,116 @@
+---
+title: "Porting an agent orchestrator to Go: a strangler-fig migration"
+description: "TAG shipped as a Python control plane wrapped around a vendored open-source runtime. I moved it to a native Go binary without a flag day, by putting the whole engine behind one interface and swapping it underneath."
+date: 2026-07-28
+tags: ['go', 'agents', 'harness']
+draft: true
+---
+
+import Mermaid from '../../components/Mermaid.astro';
+import Bars from '../../components/Bars.astro';
+import Figure from '../../components/diagrams/Figure.astro';
+import TagInstallStack from '../../components/diagrams/tag-install-stack.astro';
+
+In [the harness-engineering post](/writing/harness-engineering/) I split an agent into two layers: the runtime that reasons (the loop, the tools, the context management) and the control plane that decides how the runtime is used (routing, memory, budgets, evals, traces). The [TAG post](/writing/tag-control-plane/) was about the control plane I built. This one is about what happened to the runtime underneath it.
+
+The short version: TAG started as a Python control plane wrapped around a vendored copy of [Nous Research's `hermes-agent`](https://github.com/nousresearch/hermes-agent), MIT-licensed, doing the actual reasoning. That worked, and it also made the install story worst-in-class on the one axis that decides adoption. So I ported the whole thing to a native Go binary that owns its own runtime, and I did it without ever freezing the product or shipping a big-bang cutover. The through-line is the same runtime-versus-control-plane split: the runtime got swapped underneath a stable seam.
+
+## The distribution problem that forced the port
+
+The Python edition's install path had three runtimes stacked on top of each other. The npm package (`npm install -g tag-agent`) was a Node launcher, and on first run it shelled out to a system Python (3.11 through 3.13, with a Windows py-launcher shim), then built a venv via live `pip` and unpacked a vendored Hermes tarball into it. So a JavaScript user installed a Node shim to provision a Python interpreter to run a bundled agent runtime. Three languages, a network-dependent first launch, two update paths.
+
+<Figure label="Fig 1" caption="The install stack, before and after. The Python edition provisions four runtimes on first launch, each depending on the one below it; the native edition is a single self-contained Go binary.">
+  <TagInstallStack />
+</Figure>
+
+That is not a rounding error against what the field converged on. Every ambitious own-the-runtime agent CLI in 2026 (Codex, goose, crush, cursor-agent) ships one dependency-free native binary installed via `curl | sh` or Homebrew, with an optional thin npm wrapper that just downloads the binary. Codex is the blunt datapoint: OpenAI rewrote it from TypeScript to Rust and npm downloads went from roughly 82,000 to 41.8M over the following year. Killing the interpreter dependency is the adoption unlock.
+
+TAG's own earlier stack analysis had actually named the escape hatch: it recommended staying Python, but said the verdict "would flip toward a native rewrite" the moment Hermes was replaced by a non-Python runtime. Once I decided TAG should own its runtime, that condition was satisfied by construction.
+
+## Why Go, briefly
+
+I went back and forth on Go versus Rust and landed on Go, for reasons specific to this project. On the axis that matters most (a single dep-free binary with millisecond cold start) the two are tied for real users; Rust's smaller binary is below the threshold anyone chooses on. Go then won three things decisively for a one-maintainer project: official GA SDKs for both providers the runtime has to serve (`anthropic-sdk-go` and `openai-go`) plus the Google-co-maintained MCP `go-sdk`, so owning the runtime was a port and not a research project; 5-to-15-second builds and a days-not-months learning curve against a documented bus-factor of one; and the widest install matrix of any peer, proven by crush. Rust's real edge is mature native OS sandboxing, which I deferred because TAG already has container backends (Docker, Daytona, Modal) for untrusted execution.
+
+The language split as it stands now, mid-migration, tells the honest story: the repo is roughly 1.87M bytes of Go against 1.70M of Python, with a thin layer of TypeScript for the launcher. Go has overtaken Python, but Python has not left the building.
+
+## The seam: one interface, three chokepoints
+
+The move that made everything else possible was not writing Go. It was making the runtime replaceable *in Python first*.
+
+All of TAG's coupling to Hermes already flowed through three functions in one file (`run_hermes`, `run_profile_hermes`, `run_profile_python` in `core/profile.py`). Every call into the engine went through one of those three. So the first cut was to collapse all three behind a single versioned `RuntimeService` interface: run a turn, stream, dispatch a tool, plus auth and model-inventory operations. Nothing user-visible changed. The point was that from that release onward, the runtime was addressed through one typed contract instead of inlined `python -c` strings poked into the Hermes venv.
+
+<Mermaid label="Fig 2" caption="The RuntimeService seam. All engine coupling collapses to one versioned interface, so the implementation behind it can change without the control plane noticing." chart={`
+flowchart LR
+  CP["Control plane<br/>103 commands"] --> RS["RuntimeService<br/>run turn · stream<br/>dispatch tool · auth"]
+  RS --> W["wire adapter<br/>Python Hermes sidecar"]
+  RS -. later .-> N["native adapter<br/>Go runtime"]
+`} />
+
+Two hard invariants governed the seam and never moved. First, exactly one writer of the SQLite state at all times: the Python-to-Go boundary is a wire protocol (JSON-RPC over loopback or stdio), never a shared database file. Splitting one SQLite file across two languages would have reintroduced the read-modify-write race family the project had already paid down across three bug bashes. The runtime returns data over the wire; it never opens `tag.sqlite3`. Second, every Hermes call goes through those chokepoints, so replacement stayed localized and measurable.
+
+The subtle win is that this interim work was not throwaway. Decoupling the engine behind a wire service is simultaneously the last Python-side refactor and step one of the Go rewrite, and the same typed schema that backed the seam also backs the public HTTP API.
+
+## Strangler-fig, phase by phase
+
+The migration was strangler-fig, never big-bang: the Go binary starts as a thin front door wrapping the still-Python backend, then absorbs subsystems inward until the Python is starved out. Every phase ends with a release users can install. There is no feature-freeze window.
+
+<Mermaid label="Fig 3" caption="The phases. Distribution ships at the end of Phase 1, before the runtime is ported. The engine is then hollowed out inward, and Python is deleted last, behind a governance gate." chart={`
+flowchart TB
+  P0["Phase 0<br/>RuntimeService seam<br/>golden transcripts captured"]
+  P1["Phase 1<br/>native Go front door<br/>DISTRIBUTION WIN"]
+  P2["Phase 2<br/>own LLM layer<br/>+ agent loop"]
+  P3["Phase 3<br/>own MCP · tools · memory<br/>atomic SQLite handoff"]
+  P4["Phase 4<br/>own servers · TUI<br/>full command parity"]
+  P5["Phase 5<br/>delete Hermes + Python<br/>behind the kill gate"]
+  P0 --> P1 --> P2 --> P3 --> P4 --> P5
+`} />
+
+The sequencing is the whole trick. The headline adoption win lands at the *end of Phase 1*, roughly two months in, before the runtime is ported at all. In Phase 1 the Go binary is a front door: it parses arguments, owns the CLI shell and self-update, and forwards execution to the Python control plane plus the Hermes sidecar over the wire. Every command still works, delegated. But the install story is already fixed: `curl | sh` or `brew install` yields a working native binary with no Node and no system Python, signed and notarized. The business value is front-loaded; the remaining phases hollow out the runtime behind an install experience that already shipped.
+
+Then the engine gets absorbed inward. Phase 2 owns the LLM layer and the agent loop natively (a hand-rolled inner loop of continue / compact / stop, with a doom-loop guard at three identical calls and an iteration budget, roughly 200 lines, the crush pattern). This is the largest new build in the migration, because TAG owned none of it before; Hermes did. Phase 3 owns MCP, tool execution, the memory tiers, the DAG queue and swarm, then executes the single atomic handoff where Go becomes the sole SQLite writer. Phase 4 owns the servers, observability, and the TUI, and closes the long tail of commands.
+
+## The request path, before and after
+
+The concrete difference is easiest to see as a request path. Before, a command traversed three runtimes to reach a model. After, it is one process.
+
+<Mermaid label="Fig 4" caption="A single command before and after. The Python edition crosses three runtimes and a wire boundary; the native Go binary owns the loop end to end." chart={`
+flowchart LR
+  subgraph Before["Before · Python edition"]
+    direction LR
+    N1["node<br/>launcher"] --> Py["python<br/>control plane"]
+    Py --> H["Hermes<br/>runtime · model"]
+  end
+  subgraph After["After · native Go"]
+    direction LR
+    Go["Go binary<br/>control plane + loop"] --> Prov["provider<br/>anthropic · openai · local"]
+  end
+`} />
+
+The native binary is a single static build (`CGO_ENABLED=0`), around 18MB, versus a roughly 170MB venv. Cold bootstrap is about 30x faster and startup about 10x. It runs offline by default: execution paths hit a built-in `echo` provider so the entire surface is testable without any API key, and you pass `--provider anthropic|openai` to go live, or `--provider local` to point at a local OpenAI-compatible server (llama.cpp, Ollama, LM Studio, vLLM). There are four provider adapters in total (`anthropic`, `openai`, `echo`, `local`) and eighteen credential importers that pull existing keys out of tools you already use. The importers configure credentials; they are not runtime adapters, and I keep that distinction sharp because it is exactly the kind of thing marketing copy blurs.
+
+<Bars label="Fig 5" caption="Shippable footprint, one static Go binary versus the Python venv. Startup runs about 10x faster and cold bootstrap about 30x faster on the same machine. Reported by the repo's comparison docs, not measured here." bars={[
+  { label: "Go static binary", value: 18, display: "18 MB", accent: true },
+  { label: "Python venv", value: 170, display: "170 MB" },
+]} max={180} />
+
+## Parity is a golden-transcript ledger, not a green suite
+
+The one lesson I keep relearning is that a green unit suite is not proof, and the migration is where it would have bitten hardest. An earlier audit had found roughly thirty dispatch-layer bugs that green pytest sailed straight past, because the tests called library functions and skipped the CLI dispatch path. Porting command-by-command against a unit suite would have replayed that failure at scale.
+
+So parity is proven by a golden-transcript harness. In Phase 0, before any Go, I captured a transcript for every one of the 103 commands from the running Python impl in an isolated `TAG_HOME` sandbox: each fixture pins argv plus env plus stdin plus seeded state, and records stdout, stderr, exit code, and the database delta over the touched tables. The Go implementation has to replay that byte-for-contract before the corresponding Python code is allowed to die. That means real nondeterminism controls: a frozen clock so confidence-decay and cron matching reproduce, seeded IDs, an exact microsecond timestamp format (because temporal facts compare lexically), banker's rounding, and recorded provider cassettes so the streaming suites are offline-deterministic. Some fixtures had no Python baseline and were authored fresh (streaming event ordering, the doom-loop trip, MCP handshakes, SSRF rejection), and a few deliberately changed content rather than staying byte-identical (the CI scaffolds switch from `pip install` to the native install channels).
+
+## The kill gate, and why Python is still here
+
+The honest status: the migration is real and the native Go harness landed, but the Python edition remains a transitional fallback, and I am not going to pretend otherwise.
+
+The native harness ships 86 top-level commands across 29 packages (Cobra reports 88 if you count its own built-in `help` and `completion`), against 103 in the Python edition. That gap is not rounding; it is deliberate scope. The managed-Hermes passthrough commands (`chat`, `kanban`, `sessions`) and the desktop packaging were not ported. There are known gaps tracked in the migration status doc: no `swarm run` or `swarm abort` (only the read-only `swarm list/status/results`), the CI command is a single check-then-fix rather than the Python edition's seven subcommands, and the LSP server implements hover and nothing else. The as-built port also diverged from the plan in one big way: it went straight to a native runtime, so the transitional Python-to-Go wire sidecar I designed in Phase 0 was never actually needed at runtime. The seam mattered; the sidecar implementation of it did not have to ship.
+
+Retiring the Python sidecar for good is gated, and the gate is governance, not green CI. Deletion happens only when all three of these hold: 100% of the commands pass golden transcripts *and* isolated-sandbox runs (not the unit suite); a production soak of at least four weeks and two minor releases with zero parity-regression bugs; and an explicit funded native-parity sign-off. Green tests never trigger deletion on their own.
+
+That gate exists to defuse a specific failure mode. Once the acute install pain is gone (and Phase 1 already removed it), the urgency to finish the rewrite evaporates, and the transitional bridge quietly ossifies into the permanent architecture. Aider is the cautionary tale here: the language-peer that shipped a better bootstrap instead of a rewrite and never left. Tying retirement to a funded milestone plus a real soak converts "we should finish this" from willpower into a governance decision. Until that gate is satisfied, the Python edition stays as the fallback for the commands the Go harness does not yet fully own, and I would rather say that plainly than ship a "native" claim with asterisks I hide.
+
+## What actually transferred
+
+None of the control-plane design from the [TAG post](/writing/tag-control-plane/) changed in this migration. The routing policy, the layered memory with confidence decay, the queue and DAG, the budgets, the eval suites, the trace store: all of it sat above the `RuntimeService` seam and did not care what implemented the interface. That was the payoff of drawing the runtime-versus-control-plane line in the first place. The control plane is the durable asset. The runtime underneath it was vendored, then wire-adapted, then rewritten in a second language, and the operating layer went along for the ride without a rewrite of its own.
+
+Credit where it is due: Hermes carried the reasoning for the entire first life of this project, and it is a genuinely good open-source runtime (SQLite sessions as infrastructure, lineage-based compression, tool registration separated from exposure). The port is not a repudiation of it. It is the runtime half of the system growing into something TAG owns end to end, so the distribution story and the reasoning story stop being two runtimes bolted together. The seam is what let that happen one subsystem at a time, with the lights on the whole way.
