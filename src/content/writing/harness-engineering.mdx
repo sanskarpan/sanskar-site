@@ -12,7 +12,7 @@ The model is not the agent. The agent is the model plus the software wrapped aro
 
 That software finally has a name. **Agent = Model + Harness.** The [working definition](https://en.wikipedia.org/wiki/Agent_harness): the harness is "the software infrastructure surrounding a large language model that enables it to operate as an AI agent." DJ Farrelly puts it more cleanly still, as "the layer that connects, protects, and orchestrates components, without doing the work itself."
 
-I build agent infrastructure, including a control plane wrapped around an open-source runtime, and the pattern is consistent: the hard problems are almost never the model. They are routing, memory, verification, runaway cost, the eval that passes while the CLI is broken. All of it is harness. This post maps that layer, what it does, why it moves benchmarks more than people expect, and where the real engineering is.
+I built a control plane around an open-source agent runtime, and the pattern was consistent: the hard problems are almost never the model. They are routing, memory, verification, runaway cost, the eval that passes while the CLI is broken. All of it is harness. This post maps that layer, what it does, why it moves benchmarks more than people expect, and where the real engineering is.
 
 ## What the harness actually does
 

@@ -3,10 +3,10 @@ export const SITE = {
   name: 'Sanskar Pandey',
   // The short mark used in the masthead brand + favicon.
   mark: 'S',
-  title: 'Sanskar Pandey · systems & AI engineer',
+  title: 'Sanskar Pandey · backend, systems & AI engineer',
   description:
-    'Founding engineer building systems and AI. Notes on storage engines, LLM infrastructure, agents, and shipping things that hold up in production.',
-  tagline: 'Founding engineer. Systems & AI.',
+    'Backend, systems, and AI engineer. Notes on storage engines, LLM infrastructure, agents, and building things that hold up.',
+  tagline: 'Backend, systems & AI engineer.',
   url: 'https://sanskarpan.sanskarpandey2004.workers.dev', // TODO: your real domain
   locale: 'en',
   author: 'Sanskar Pandey',

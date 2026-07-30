@@ -12,7 +12,7 @@ A running list of things I've built from scratch specifically to understand them
 - an **LSM-tree** (Raft replication): to understand write-heavy storage
 - a **Raft** implementation: to understand consensus by getting it wrong first
 - a **distributed tracing** backend: to understand sampling and RED metrics
-- an **MCP server** (twice): to understand how agents actually *do* things
+- an **MCP server**: to understand how agents actually *do* things
 - an **LLM-eval pipeline** ([PromptLine](https://github.com/sanskarpan/promptline)): to understand what "good evals vs noise" means
 
 The pattern: reading gives you *vocabulary*, building gives you *intuition*. You can talk about compaction after reading a blog post. You only *feel* write amplification after your own tree grinds to a halt.
