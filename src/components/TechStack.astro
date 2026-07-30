@@ -1,0 +1,48 @@
+---
+import ICONS from '../data/tech-icons.json';
+
+const GROUPS = [
+  { label: 'Languages', items: [
+    { slug: 'go', name: 'Go' },
+    { slug: 'python', name: 'Python' },
+    { slug: 'typescript', name: 'TypeScript' },
+    { slug: 'cplusplus', name: 'C++' },
+    { slug: 'rust', name: 'Rust' },
+  ] },
+  { label: 'Backend & data', items: [
+    { slug: 'postgresql', name: 'PostgreSQL' },
+    { slug: 'redis', name: 'Redis' },
+    { slug: 'apachekafka', name: 'Kafka' },
+    { slug: 'fastapi', name: 'FastAPI' },
+  ] },
+  { label: 'Infra & observability', items: [
+    { slug: 'docker', name: 'Docker' },
+    { slug: 'kubernetes', name: 'Kubernetes' },
+    { slug: 'prometheus', name: 'Prometheus' },
+  ] },
+  { label: 'Web', items: [
+    { slug: 'react', name: 'React' },
+    { slug: 'nextdotjs', name: 'Next.js' },
+    { slug: 'astro', name: 'Astro' },
+  ] },
+];
+const icons: Record<string, string> = ICONS;
+---
+
+<div class="tech">
+  {GROUPS.map((g) => (
+    <div class="tech__group">
+      <span class="tech__label">{g.label}</span>
+      <div class="tech__chips">
+        {g.items.map((t) => (
+          <span class="tech__chip">
+            {icons[t.slug] && (
+              <svg class="tech__icon" viewBox="0 0 24 24" aria-hidden="true"><path d={icons[t.slug]} /></svg>
+            )}
+            {t.name}
+          </span>
+        ))}
+      </div>
+    </div>
+  ))}
+</div>

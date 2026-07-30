@@ -1,0 +1,61 @@
+---
+// Most recently pushed repos, fetched client-side from the GitHub API.
+// Hides itself if the API is unreachable or rate-limited.
+const user = 'sanskarpan';
+---
+
+<div class="repos" data-user={user}>
+  <div class="repos__list" data-repos-list></div>
+</div>
+
+<script>
+  (async function () {
+    var root = document.querySelector('.repos');
+    if (!root) return;
+    var list = root.querySelector('[data-repos-list]');
+    var user = root.getAttribute('data-user');
+
+    function ago(iso) {
+      var s = (Date.now() - new Date(iso).getTime()) / 1000;
+      var d = Math.floor(s / 86400);
+      if (d < 1) return 'today';
+      if (d < 2) return 'yesterday';
+      if (d < 30) return d + 'd ago';
+      var mo = Math.floor(d / 30);
+      if (mo < 12) return mo + 'mo ago';
+      return Math.floor(d / 365) + 'y ago';
+    }
+    function esc(s) {
+      return String(s).replace(/[&<>"]/g, function (c) {
+        return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c];
+      });
+    }
+    // keep the site's zero-em-dash aesthetic even for external repo blurbs
+    function clean(s) { return String(s).replace(/\s*[—–]\s*/g, ', '); }
+
+    // repos that aren't representative (course work, profile config, cron-only churn)
+    var DENY = { 'TDS-GA1': 1, 'TDS-GA2': 1, 'TDS-GA2-Vercel': 1, 'MPII-2026': 1, 'sanskarpan': 1, 'sanskarpan.github.io': 1 };
+
+    try {
+      var res = await fetch('https://api.github.com/users/' + user + '/repos?sort=pushed&per_page=24&type=owner');
+      if (!res.ok) throw new Error('status ' + res.status);
+      var repos = (await res.json()).filter(function (r) { return !r.fork && !DENY[r.name]; }).slice(0, 6);
+      if (!repos.length) throw new Error('none');
+      repos.forEach(function (r) {
+        var a = document.createElement('a');
+        a.className = 'repo';
+        a.href = r.html_url;
+        a.target = '_blank';
+        a.rel = 'noopener noreferrer';
+        var lang = r.language ? '<span class="repo__lang">' + esc(r.language) + '</span>' : '';
+        a.innerHTML =
+          '<span class="repo__top"><span class="repo__name">' + esc(r.name) + '</span>' + lang + '</span>' +
+          '<span class="repo__desc">' + (r.description ? esc(clean(r.description)) : '') + '</span>' +
+          '<span class="repo__meta">updated ' + ago(r.pushed_at) + '</span>';
+        list.appendChild(a);
+      });
+    } catch (e) {
+      root.style.display = 'none';
+    }
+  })();
+</script>
