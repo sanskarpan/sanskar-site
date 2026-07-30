@@ -1,0 +1,91 @@
+---
+// Task lifecycle. The spine is none -> scheduled -> queued -> running. Running
+// fans out to terminal states, or to a rework band (up_for_retry,
+// up_for_reschedule, deferred) that loops back to scheduled. Terminal states
+// (success, failed, upstream_failed, skipped) have no outgoing edges. States
+// and transitions come from validTransitions in internal/state/state.go.
+---
+<svg class="dgm" viewBox="0 0 780 470" role="img"
+     aria-label="Task state machine. The spine runs none to scheduled to queued to running. Running fans out to the terminal states success, failed, upstream_failed and skipped on the right, or to a rework band of up_for_retry, up_for_reschedule and deferred that loops back to scheduled. A trigger rule can also skip or upstream-fail a task straight from none.">
+  <defs>
+    <marker id="ts-ah" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" class="dgm-arrow" />
+    </marker>
+  </defs>
+
+  <!-- ============ spine (top row) ============ -->
+  <rect x="30" y="30" width="120" height="44" rx="8" class="dgm-box" />
+  <text x="90" y="57" text-anchor="middle" class="dgm-label">none</text>
+
+  <rect x="220" y="30" width="120" height="44" rx="8" class="dgm-box dgm-box--accent" />
+  <text x="280" y="57" text-anchor="middle" class="dgm-label">scheduled</text>
+
+  <rect x="410" y="30" width="120" height="44" rx="8" class="dgm-box" />
+  <text x="470" y="57" text-anchor="middle" class="dgm-label">queued</text>
+
+  <rect x="600" y="30" width="120" height="44" rx="8" class="dgm-box dgm-box--accent" />
+  <text x="660" y="57" text-anchor="middle" class="dgm-label">running</text>
+
+  <line x1="150" y1="52" x2="218" y2="52" class="dgm-line" marker-end="url(#ts-ah)" />
+  <text x="184" y="44" text-anchor="middle" class="dgm-sub">run</text>
+  <line x1="340" y1="52" x2="408" y2="52" class="dgm-line" marker-end="url(#ts-ah)" />
+  <text x="374" y="44" text-anchor="middle" class="dgm-sub">admit</text>
+  <line x1="530" y1="52" x2="598" y2="52" class="dgm-line" marker-end="url(#ts-ah)" />
+  <text x="564" y="44" text-anchor="middle" class="dgm-sub">claim</text>
+
+  <!-- ============ terminal column (right) ============ -->
+  <rect x="600" y="250" width="120" height="40" rx="8" class="dgm-box" />
+  <text x="660" y="275" text-anchor="middle" class="dgm-label">success</text>
+
+  <rect x="600" y="300" width="120" height="40" rx="8" class="dgm-box" />
+  <text x="660" y="325" text-anchor="middle" class="dgm-label">failed</text>
+
+  <rect x="600" y="350" width="120" height="40" rx="8" class="dgm-box" />
+  <text x="660" y="368" text-anchor="middle" class="dgm-sub">upstream_failed</text>
+  <text x="660" y="383" text-anchor="middle" class="dgm-sub">terminal</text>
+
+  <rect x="600" y="400" width="120" height="40" rx="8" class="dgm-box" />
+  <text x="660" y="425" text-anchor="middle" class="dgm-label">skipped</text>
+
+  <!-- running -> terminal column: drop straight down to a bus at x=660, then across at y=230 to x=560 -->
+  <path d="M 660 74 L 660 230 L 560 230 L 560 410" fill="none" class="dgm-line" />
+  <text x="700" y="150" text-anchor="middle" class="dgm-sub">done</text>
+  <line x1="560" y1="270" x2="598" y2="270" class="dgm-line" marker-end="url(#ts-ah)" />
+  <line x1="560" y1="320" x2="598" y2="320" class="dgm-line" marker-end="url(#ts-ah)" />
+  <line x1="560" y1="370" x2="598" y2="370" class="dgm-line" marker-end="url(#ts-ah)" />
+  <line x1="560" y1="420" x2="598" y2="420" class="dgm-line" marker-end="url(#ts-ah)" />
+
+  <!-- ============ rework band (middle-left) ============ -->
+  <rect x="220" y="250" width="120" height="40" rx="8" class="dgm-box dgm-box--dashed" />
+  <text x="280" y="275" text-anchor="middle" class="dgm-sub">up_for_retry</text>
+
+  <rect x="220" y="300" width="120" height="40" rx="8" class="dgm-box dgm-box--dashed" />
+  <text x="280" y="325" text-anchor="middle" class="dgm-sub">up_for_reschedule</text>
+
+  <rect x="220" y="350" width="120" height="40" rx="8" class="dgm-box dgm-box--dashed" />
+  <text x="280" y="375" text-anchor="middle" class="dgm-sub">deferred</text>
+
+  <!-- running -> rework band: drop down from running, run left along y=130, elbow into each box -->
+  <path d="M 640 74 L 640 130 L 400 130" fill="none" class="dgm-line dgm-line--accent" />
+  <path d="M 400 130 L 400 270 L 342 270" fill="none" class="dgm-line dgm-line--accent" marker-end="url(#ts-ah)" />
+  <path d="M 400 130 L 400 320 L 342 320" fill="none" class="dgm-line dgm-line--accent" marker-end="url(#ts-ah)" />
+  <path d="M 400 130 L 400 370 L 342 370" fill="none" class="dgm-line dgm-line--accent" marker-end="url(#ts-ah)" />
+  <text x="470" y="122" text-anchor="middle" class="dgm-sub dgm-sub--accent">retry / defer</text>
+
+  <!-- rework band -> back to scheduled: exit left, up the far-left gutter, into scheduled bottom -->
+  <path d="M 220 270 L 180 270" fill="none" class="dgm-line" />
+  <path d="M 220 320 L 180 320" fill="none" class="dgm-line" />
+  <path d="M 220 370 L 180 370" fill="none" class="dgm-line" />
+  <path d="M 180 270 L 180 100 L 280 100 L 280 76" fill="none" class="dgm-line" marker-end="url(#ts-ah)" />
+  <path d="M 180 320 L 180 270" fill="none" class="dgm-line" />
+  <path d="M 180 370 L 180 320" fill="none" class="dgm-line" />
+  <text x="180" y="200" text-anchor="middle" transform="rotate(-90 180 200)" class="dgm-sub">re-enqueue</text>
+
+  <!-- none -> skipped / upstream_failed short-circuit -->
+  <path d="M 90 74 L 90 452 L 598 452 L 598 420" fill="none" class="dgm-line dgm-ts-dash" marker-end="url(#ts-ah)" />
+  <text x="330" y="447" text-anchor="middle" class="dgm-sub">trigger rule can skip or upstream-fail before it runs</text>
+
+  <style>
+    .dgm-ts-dash { stroke-dasharray: 5 4; }
+  </style>
+</svg>

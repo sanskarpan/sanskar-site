@@ -1,0 +1,170 @@
+---
+title: "Airflow without Python: a correct DAG scheduler in Go"
+description: "YAML DAGs with hot reload, 11 Airflow-matching trigger rules, cycle detection that names the exact back-edge, and at-least-once execution held together by leases. The mechanics of a workflow engine that ships as one Go binary."
+date: 2026-07-24
+tags: ['go', 'systems', 'scheduling']
+draft: true
+---
+
+import Mermaid from '../../components/Mermaid.astro';
+import Figure from '../../components/diagrams/Figure.astro';
+import DagTaskState from '../../components/diagrams/dag-task-state.astro';
+import DagTriggerMatrix from '../../components/diagrams/dag-trigger-matrix.astro';
+
+Airflow's semantics are excellent and its runtime is a tax. To get cron schedules, trigger rules, retries with backoff, sensors, and a dead-letter queue, you sign up for Python, a metadata database, a message broker, and a scheduler process that, for years, was the part everyone complained about. The famous number was scheduling latency: the gap between "this task's dependencies are met" and "a worker is actually running it," which on busy deployments used to sit in the tens of seconds because the scheduler re-parsed DAG files on a loop and serialized state through the database.
+
+I wanted the semantics without the runtime, so I built one in Go: DAGs are YAML, the store is embedded SQLite, workers are goroutines or plain HTTP processes, two static binaries. The interesting part is not that it runs. It is what "correct" costs, because a scheduler is mostly a machine for being right about ordering and failure under concurrency.
+
+## The tick is the whole engine
+
+There is no reactive magic. A single goroutine wakes on a ticker (default one second) and does the same five things every time, in order:
+
+<Mermaid label="Fig 1" caption="One scheduler tick. It is deliberately sequential: create runs, resolve dependencies into scheduled tasks, admit as many as the concurrency limits allow, process due retries, then finalize any run whose tasks are all terminal." chart={`
+flowchart TD
+  T["tick"] --> A["create dag runs<br/>from cron and catchup"]
+  A --> B["resolve deps<br/>evaluate trigger rules"]
+  B --> C["admit to queue<br/>under concurrency caps"]
+  C --> D["process retries<br/>whose delay elapsed"]
+  D --> E["finalize runs<br/>all tasks terminal"]
+  E --> P["publish tick event<br/>duration and counts"]
+`} />
+
+Every tick publishes its own duration and its work counts to the event bus, which is how the UI draws a live picture and how you catch a tick starting to run long. The design target in the README is a p99 tick under 100ms for 100 DAGs and 1000 task instances. I want to be precise about that word: it is a **target**, sized against benchmarks in the repo, not a measured SLA. The benchmarks exercise the tick over 100 and 500 DAGs and a load test drives 100 DAGs with 10k task instances, but they assert "no deadlock and forward progress," not a latency bound. Treat the README table as the shape I engineered toward, and the benchmarks as the thing that keeps it honest.
+
+A one-second tick is fast enough because it does no file I/O. Airflow's historical latency came from the scheduler parsing DAGs inside the same loop that scheduled tasks. Here, parsing lives entirely elsewhere.
+
+## Parsing lives on a file watcher, not the loop
+
+DAGs are files in a directory. A registry loads them once at startup and then watches the tree with `fsnotify`. On a write or create of a `.yaml` file, it re-parses that one file and swaps the DAG in a map behind a read-write mutex. The scheduler loop only ever reads that map. Parse cost never touches tick latency.
+
+Two details matter here. A bad YAML on reload is logged and dropped, never fatal: one broken file cannot stop the others from loading. And paused state is tracked in a **separate** map from the DAG definitions, under the same lock, so reloading a DAG's file does not silently un-pause it. That was a real bug I fixed; reloading a definition and reloading operator intent are different events and have to be kept apart.
+
+The trade-off is honest: `fsnotify` gives near-instant reload with zero downtime and zero restart, which Airflow cannot do, but it also makes the filesystem the source of truth, so your deployment story is "get the YAML onto the box" (a mounted volume, a ConfigMap) rather than a database migration.
+
+## Acyclicity is a parse-time property, and the error names the cycle
+
+A DAG that contains a cycle is not a scheduling problem to be handled later. It is an invalid input to be rejected before a single run exists. When the graph is built, I run Kahn's algorithm: compute in-degrees, repeatedly peel off zero-in-degree nodes, and accumulate a topological order. If the order comes out shorter than the task count, there is a cycle, full stop.
+
+Kahn tells you a cycle exists but not where, and "your DAG has a cycle" is useless on a graph with fifty tasks. So on failure I run a second pass: a colored DFS (white, gray, black) that catches a back-edge to a gray node still on the recursion stack and reconstructs the exact path from that node forward.
+
+```go
+for _, down := range d.downstream[n] {
+    if color[down] == gray {
+        for i, s := range stack {
+            if s == down {
+                cycle = append([]string{}, stack[i:]...)
+                break
+            }
+        }
+        cycle = append(cycle, down)
+        return true
+    }
+    ...
+}
+```
+
+The error you get is `a -> b -> c -> a`, the literal nodes to go delete an edge from. Kahn is the cheap correctness gate on every parse; the DFS only runs when there is something to explain, so you pay for the diagnostic exactly when you need it. Self-loops and dependencies on unknown task IDs are caught in the same build pass with their own targeted messages.
+
+The topological order this produces is not thrown away. It becomes the iteration order the scheduler uses when it resolves dependencies, which is what makes the ordering guarantee cheap to hold: for every edge `u -> v`, `u` reaches a terminal state before `v` leaves its initial `none` state, because the loop visits `u` first and only advances `v` once `u`'s state is counted.
+
+Every task instance walks the same lifecycle, and the whole scheduler is really just a machine for moving tasks through it under the rules below. The spine is the happy path; the dashed band is rework that loops back for another attempt; the four terminal states are where a task stops moving.
+
+<Figure label="Fig 2" caption="Task lifecycle. The spine none to scheduled to queued to running is the happy path. Running fans out to a terminal state or into the rework band up_for_retry, up_for_reschedule, deferred, which re-enqueues into scheduled. Trigger rules can also skip or upstream-fail a task straight from none. success, failed, upstream_failed and skipped are terminal, from internal/state/state.go.">
+  <DagTaskState />
+</Figure>
+
+## Trigger rules are a pure function over upstream counts
+
+This is the part with the most Airflow surface area and the most room to be subtly wrong. There are eleven trigger rules. Each task, on each tick, gets its upstream states tallied into six counts (total, success, failed, upstream-failed, skipped, done) and those counts go into a single pure function that returns one of four decisions: wait, run, skip, or upstream-failed.
+
+<Mermaid label="Fig 3" caption="Dependency resolution for one task. Upstream states are tallied into counts, the task's trigger rule maps counts to a decision, and the decision drives the state transition. The function is pure, which is what makes eleven rules testable." chart={`
+flowchart LR
+  U["upstream states"] --> C["tally counts<br/>success failed skipped done"]
+  C --> R["trigger rule<br/>eval"]
+  R --> W["wait<br/>stay in none"]
+  R --> RUN["run<br/>go to scheduled"]
+  R --> SK["skip"]
+  R --> UF["upstream failed"]
+`} />
+
+Making it a pure function of counts is the entire correctness strategy. State lives in the store; the decision logic touches none of it. That means every rule is a table test: hand it counts, assert the decision. `all_success` runs only when success equals total, fails the moment any upstream failed, and skips if an upstream skipped without failing. `none_failed_min_one_success` waits until everything is done, then requires at least one real success. `all_done` fires when everything is terminal regardless of outcome, which is how cleanup tasks run after their upstreams blow up.
+
+The eleven rules differ only in the upstream count that flips them from `wait` to `run`. Laid out side by side, the family structure is obvious: the `all_` rules gate on totals, the `one_` rules gate on a single hit, and the `none_` rules gate on the absence of a bad outcome once everything is done.
+
+<Figure label="Fig 4" caption="The 11 trigger rules and the upstream count that fires a RUN decision, read from EvaluateTriggerRule in internal/scheduler/triggerrule.go. failed is shorthand for failed plus upstream_failed. done means every upstream reached a terminal state. Rules also emit skip or upstream_failed on the other branches; only the run condition is shown.">
+  <DagTriggerMatrix />
+</Figure>
+
+Two rules bit me, both the same class of mistake. `always` is documented as "no dependencies required," and the naive reading fires it immediately, before its declared upstreams have even started, which quietly violates the dependency order the whole system is supposed to guarantee. It has to wait for upstreams to reach *any* terminal state first; "no requirement on the outcome" is not "no requirement on ordering." Similarly `one_done` has to count skipped and upstream-failed tasks as done, not just successes and failures, or a branch that skips half the graph leaves a downstream task waiting forever. Both are one-line fixes, both invisible until you write the test a real DAG shape would hit.
+
+The scheduler feeds the exact counts and decision to the event bus on every evaluation, so the UI can show you *why* a task is upstream-failed: `all_success, success=1 failed=1, decision UPSTREAM_FAILED`. When a run stalls, that trace is the difference between debugging and guessing.
+
+## Admission control: a priority heap behind three caps
+
+A task the trigger rules cleared is `scheduled`, which means eligible, not running. Admission is a separate step because slots are finite. Each tick, the scheduler pulls up to `max_tis_per_query` candidates (default 512), sorts them by priority and then logical date, and walks them until it runs out of slots.
+
+Slots are gated by three independent caps, checked in order: global `parallelism` (default 32), per-DAG `max_active_tasks`, and named pool slots. A task only enters the queue if all three admit it. This is what backs the concurrency invariant: running-plus-queued never exceeds any of the three limits, because a slot is acquired before the state transition and released on every failure path.
+
+Admitted tasks land in a priority heap. The ordering is higher priority first, and within a priority, older enqueue time first, so priority does not starve FIFO fairness among equals:
+
+```go
+func (h priorityHeap) Less(i, j int) bool {
+    if h[i].Priority != h[j].Priority {
+        return h[i].Priority > h[j].Priority // higher priority first
+    }
+    return h[i].EnqueuedAt.Before(h[j].EnqueuedAt) // older first
+}
+```
+
+Workers (local goroutines or remote HTTP processes) claim off the heap. The claim is the moment the correctness story gets interesting, because a claimed task can be lost.
+
+## At-least-once, held together by leases
+
+The queue does not hand a task to a worker and forget it. A claim moves the task into an in-flight map with a lease deadline (default 60 seconds out). The worker heartbeats to extend that lease while it runs, and the extend call checks the caller actually owns the lease. Two workers cannot both hold a live lease on the same task; that is the exclusivity property, enforced by the ownership check on every extend and ack.
+
+<Mermaid label="Fig 5" caption="Lease lifecycle. A claim sets a deadline; heartbeats push it forward; a clean ack removes the task. If the deadline passes with no heartbeat, the reaper reclaims the task and either schedules a retry or dead-letters it." chart={`
+flowchart TD
+  Q["pending heap"] -->|claim| IF["in flight<br/>lease deadline set"]
+  IF -->|heartbeat| IF
+  IF -->|ack success| DONE["removed"]
+  IF -->|deadline passes<br/>no heartbeat| Z["reaper reclaims"]
+  Z -->|tries left| RETRY["up for retry<br/>backoff delay"]
+  Z -->|tries exhausted| DLQ["dead letter queue"]
+  RETRY --> Q
+`} />
+
+A separate reaper goroutine ticks every five seconds and does the reclaiming. It scans the in-flight map for leases whose deadline has passed, and for each one it makes the same decision the retry path makes: if the task has retries left, release its pool slot and mark it up-for-retry with a backoff delay; if not, mark it failed and push it to the dead-letter queue. A worker that crashes mid-task is indistinguishable from a worker that is merely slow and stopped heartbeating, and that is fine, because at-least-once is the contract. The task will run again. Operators have to be idempotent or accept the duplicate; the scheduler will not silently drop the task to avoid a re-run.
+
+The reaper handles four separate ways a task can get stuck, and all four converge on that same retry-or-dead-letter fork: an expired lease (zombie worker), a task wedged in `queued` past a timeout, a running task past its execution timeout, and a reschedule-mode sensor poking longer than its ceiling. One place decides "retry versus give up," so the retry bound (at most `max_retries + 1` executions before the dead-letter queue) holds no matter how the task got into trouble.
+
+<Mermaid label="Fig 6" caption="The reaper's four detectors and their shared fork. Three transient stalls (zombie lease, stuck in queued, execution timeout) take the retry-or-give-up branch. The fourth, a reschedule sensor past its ceiling, is treated as unrecoverable and dead-letters directly. Steps 2 to 5 of reap in internal/scheduler/reaper.go." chart={`
+flowchart TD
+  Z["expired lease<br/>zombie worker"] --> F{"retries left"}
+  QD["stuck in queued<br/>past timeout"] --> F
+  EX["running past<br/>execution timeout"] --> F
+  F -->|yes| RT["up_for_retry<br/>backoff delay"]
+  F -->|no| DL["dead letter queue<br/>marked failed"]
+  RS["reschedule sensor<br/>past its ceiling"] --> DL
+`} />
+
+The asymmetry in that diagram is deliberate. A zombie or a timeout is usually transient, so it earns a retry; a reschedule sensor that has poked for hours without its condition ever coming true is not going to succeed on attempt two, so the fourth path skips the retry branch and fails it straight to the dead-letter queue.
+
+Retries use exponential backoff with full jitter, `base * 2^(attempt-1)` clamped to a max, then multiplied by a random factor with a floor at ten percent of the computed delay. Full jitter is the AWS-recommended shape and it stops a retry storm from synchronizing: a hundred tasks that failed on the same downstream outage should not all retry at the same instant and knock it over again.
+
+## Sensors: the slot is the resource
+
+Sensors wait for an external condition (a file appears, an HTTP endpoint returns 2xx). The subtle cost is the worker slot, and there are two modes that trade it differently.
+
+In **poke** mode the sensor holds its slot and loops, sleeping `poke_interval` between checks. Simple, immediate when the condition flips, and expensive: a sensor waiting four hours for a daily file occupies a worker slot for four hours. (This is also where I found a sensor implemented with unbounded recursion instead of a loop, which is a stack overflow waiting for any genuinely long wait. It is a loop now.)
+
+In **reschedule** mode the sensor pokes once, and if the condition is not met it returns a special state and releases the slot, to be re-scheduled after the interval. The slot is free between pokes, which is the correct default for long waits. The cost you pay is coarser timing (you only re-check on tick boundaries) and a new failure mode: a reschedule sensor can get stuck forever if its condition never comes true, which is exactly why the reaper's fourth path exists to fail it after a ceiling.
+
+## XCom is capped on purpose
+
+Tasks pass small values downstream through XCom, scoped to a `(dag_run, task_id)` key. There is a hard 48KB cap (49152 bytes) per value, enforced on push, and it is a feature. XCom is a coordination channel, not a data bus. The cap is the guardrail that stops someone shoving a dataframe through the scheduler's metadata store and turning the thing that is supposed to orchestrate the pipeline into a bottleneck inside it. Move the bytes out of band, pass the pointer through XCom.
+
+## What you give up
+
+The scheduler is single-leader by design; you run one and scale workers horizontally. That is a deliberate simplification, and it is the right one for the target: it makes the ordering and concurrency invariants tractable because there is exactly one thing making scheduling decisions. It also means the scheduler is a single point of failure you have to plan around, where Airflow's newer HA scheduler does not. YAML DAGs are more constrained than Python DAGs; you get templated config values, not arbitrary code generating your graph, which is a real limit and, for most pipelines, a relief.
+
+This is not a smaller Airflow. It is the subset of Airflow's semantics that survives when you refuse to pay for Python, a broker, and a database server, implemented so the correctness properties (acyclicity at parse time, topological execution, at-least-once with lease exclusivity, a bounded retry count) are things the code holds rather than things the README claims. The [full engine is on GitHub](https://github.com/sanskarpan/dag-scheduler). The trigger-rule table and the reaper's four-way stuck-task fork are the two files I would read first.

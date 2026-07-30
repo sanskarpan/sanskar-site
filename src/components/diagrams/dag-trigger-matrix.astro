@@ -1,0 +1,52 @@
+---
+// Trigger-rule matrix: the 11 rules mapped to the upstream condition that fires
+// a RUN decision. "done" means every upstream reached a terminal state
+// (success, failed, upstream_failed, or skipped). Conditions are read straight
+// from EvaluateTriggerRule in internal/scheduler/triggerrule.go.
+const rules = [
+  { name: 'all_success',                 run: 'success = total' },
+  { name: 'all_failed',                  run: 'failed = total' },
+  { name: 'all_done',                    run: 'done = total' },
+  { name: 'all_done_min_one_success',    run: 'done = total, success >= 1' },
+  { name: 'one_success',                 run: 'success >= 1' },
+  { name: 'one_failed',                  run: 'failed >= 1' },
+  { name: 'one_done',                    run: 'done >= 1' },
+  { name: 'none_failed',                 run: 'done = total, no failures' },
+  { name: 'none_failed_min_one_success', run: 'done = total, no failures, success >= 1' },
+  { name: 'none_skipped',                run: 'done = total, no skips' },
+  { name: 'always',                      run: 'done = total' },
+];
+
+const rowH = 30;
+const top = 52;
+const nameX = 24;
+const runX = 300;
+const width = 720;
+const height = top + rules.length * rowH + 16;
+---
+<svg class="dgm" viewBox={`0 0 ${width} ${height}`} role="img"
+     aria-label="The 11 trigger rules and the upstream condition that fires a run decision. failed is shorthand for failed plus upstream_failed; done means every upstream reached a terminal state.">
+  <!-- header -->
+  <text x={nameX} y="26" class="dgm-title">trigger rule</text>
+  <text x={runX} y="26" class="dgm-title">fires RUN when</text>
+  <line x1="14" y1="38" x2={width - 14} y2="38" class="dgm-line" />
+
+  {rules.map((r, i) => {
+    const y = top + i * rowH;
+    return (
+      <g>
+        {i % 2 === 1 && (
+          <rect x="14" y={y - 20} width={width - 28} height={rowH} rx="4" class="dgm-mx-stripe" />
+        )}
+        <text x={nameX} y={y} class="dgm-label dgm-mx-mono">{r.name}</text>
+        <text x={runX} y={y} class="dgm-sub dgm-mx-cond">{r.run}</text>
+      </g>
+    );
+  })}
+</svg>
+
+<style>
+  .dgm-mx-stripe { fill: var(--paper-2); opacity: 0.6; }
+  .dgm-mx-mono { font-family: var(--font-mono); font-size: 13px; }
+  .dgm-mx-cond { font-family: var(--font-mono); font-size: 12.5px; }
+</style>
