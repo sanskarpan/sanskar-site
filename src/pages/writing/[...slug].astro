@@ -4,14 +4,23 @@ import Article from '../../layouts/Article.astro';
 import { readingMinutes } from '../../utils';
 
 export async function getStaticPaths() {
-  const posts = await getCollection('writing', ({ data }) => !data.draft);
-  return posts.map((post) => ({
-    params: { slug: post.id },
-    props: { post },
-  }));
+  const posts = (await getCollection('writing', ({ data }) => !data.draft))
+    .sort((a, b) => b.data.date.valueOf() - a.data.date.valueOf());
+  return posts.map((post, i) => {
+    const newer = posts[i - 1]; // more recent neighbour
+    const older = posts[i + 1]; // older neighbour
+    return {
+      params: { slug: post.id },
+      props: {
+        post,
+        newer: newer ? { href: `/writing/${newer.id}/`, title: newer.data.title } : null,
+        older: older ? { href: `/writing/${older.id}/`, title: older.data.title } : null,
+      },
+    };
+  });
 }
 
-const { post } = Astro.props;
+const { post, newer, older } = Astro.props;
 const { Content, headings } = await render(post);
 const minutes = readingMinutes(post.body ?? '');
 ---
@@ -24,6 +33,8 @@ const minutes = readingMinutes(post.body ?? '');
   tags={post.data.tags}
   minutes={minutes}
   headings={headings}
+  older={older}
+  newer={newer}
   backHref="/writing"
   backLabel="writing"
 >

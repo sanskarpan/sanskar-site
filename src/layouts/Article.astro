@@ -1,8 +1,10 @@
 ---
 import Base from './Base.astro';
+import Tag from '../components/Tag.astro';
 import { formatDate } from '../utils';
 
 interface Heading { depth: number; slug: string; text: string; }
+interface PostLink { href: string; title: string; }
 interface Props {
   title: string;
   description: string;
@@ -13,10 +15,13 @@ interface Props {
   backHref?: string;
   backLabel?: string;
   headings?: Heading[];
+  older?: PostLink | null;
+  newer?: PostLink | null;
 }
 const {
   title, description, date, updated, tags = [], minutes,
   backHref = '/writing', backLabel = 'writing', headings = [],
+  older = null, newer = null,
 } = Astro.props;
 
 const toc = headings.filter((h) => h.depth === 2 || h.depth === 3);
@@ -45,7 +50,7 @@ const toc = headings.filter((h) => h.depth === 2 || h.depth === 3);
           <time datetime={date.toISOString()}>{formatDate(date)}</time>
           {minutes && <><span class="dot">&middot;</span><span>{minutes} min read</span></>}
           {updated && <><span class="dot">&middot;</span><span>updated {formatDate(updated)}</span></>}
-          {tags.map((t) => <span class="tag">{t}</span>)}
+          {tags.map((t) => <Tag tag={t} />)}
         </div>
       </header>
 
@@ -54,7 +59,25 @@ const toc = headings.filter((h) => h.depth === 2 || h.depth === 3);
       </div>
 
       <hr style="border:0; border-top:1px solid var(--line); margin: 3rem 0 1.5rem;" />
-      <a href={backHref} class="backlink">&larr; back to {backLabel}</a>
+
+      {(older || newer) && (
+        <nav class="post-nav" aria-label="More writing">
+          {older && (
+            <a class="post-nav__link" href={older.href}>
+              <span class="post-nav__dir">&larr; Older</span>
+              <span class="post-nav__title">{older.title}</span>
+            </a>
+          )}
+          {newer && (
+            <a class="post-nav__link post-nav__link--next" href={newer.href}>
+              <span class="post-nav__dir">Newer &rarr;</span>
+              <span class="post-nav__title">{newer.title}</span>
+            </a>
+          )}
+        </nav>
+      )}
+
+      <a href={backHref} class="backlink" style="display:inline-block; margin-top:1.5rem;">&larr; back to {backLabel}</a>
     </article>
 
     <!-- RIGHT rail: table of contents -->
@@ -97,6 +120,72 @@ const toc = headings.filter((h) => h.depth === 2 || h.depth === 3);
         if (navigator.clipboard) navigator.clipboard.writeText(location.href);
         copy.textContent = '✓ copied';
         setTimeout(function () { copy.textContent = restore; }, 1400);
+      });
+
+      // copy button on every code block
+      Array.prototype.forEach.call(document.querySelectorAll('.prose pre:not(.mermaid)'), function (pre) {
+        var btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = 'code-copy';
+        btn.textContent = 'Copy';
+        btn.setAttribute('aria-label', 'Copy code');
+        btn.addEventListener('click', function () {
+          var code = pre.querySelector('code');
+          var text = code ? code.innerText : pre.innerText;
+          if (navigator.clipboard) navigator.clipboard.writeText(text);
+          btn.textContent = 'Copied';
+          btn.classList.add('is-copied');
+          setTimeout(function () { btn.textContent = 'Copy'; btn.classList.remove('is-copied'); }, 1400);
+        });
+        pre.appendChild(btn);
+      });
+
+      // expand-to-fullscreen for diagrams
+      function openFigure(frame) {
+        var overlay = document.createElement('div');
+        overlay.className = 'fig-modal';
+        var panel = document.createElement('div');
+        panel.className = 'fig-modal__panel';
+        // clone the diagram (svg or processed mermaid), skip the expand button itself
+        Array.prototype.forEach.call(frame.children, function (child) {
+          if (child.classList && child.classList.contains('fig-expand')) return;
+          panel.appendChild(child.cloneNode(true));
+        });
+        var close = document.createElement('button');
+        close.type = 'button';
+        close.className = 'fig-modal__close';
+        close.textContent = '✕ close';
+        close.setAttribute('aria-label', 'Close diagram');
+        overlay.appendChild(panel);
+        overlay.appendChild(close);
+        function shut() {
+          overlay.remove();
+          document.removeEventListener('keydown', onKey);
+        }
+        function onKey(e) { if (e.key === 'Escape') shut(); }
+        overlay.addEventListener('click', function (e) { if (e.target === overlay) shut(); });
+        close.addEventListener('click', shut);
+        document.addEventListener('keydown', onKey);
+        document.body.appendChild(overlay);
+      }
+      Array.prototype.forEach.call(document.querySelectorAll('.figure .figure__frame'), function (frame) {
+        var btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = 'fig-expand';
+        btn.textContent = '⤢ expand';
+        btn.setAttribute('aria-label', 'Expand diagram to full screen');
+        btn.addEventListener('click', function () { openFigure(frame); });
+        frame.appendChild(btn);
+      });
+
+      // hover-reveal anchor link on section headings
+      Array.prototype.forEach.call(document.querySelectorAll('.prose h2[id], .prose h3[id]'), function (h) {
+        var a = document.createElement('a');
+        a.className = 'head-anchor';
+        a.href = '#' + h.id;
+        a.textContent = '#';
+        a.setAttribute('aria-label', 'Link to this section');
+        h.appendChild(a);
       });
 
       // scroll-spy for the table of contents
