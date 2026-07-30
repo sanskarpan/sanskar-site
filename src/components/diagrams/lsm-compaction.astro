@@ -1,0 +1,82 @@
+---
+// Leveled compaction shape: L0 files overlap and come straight from flushes,
+// L1..L6 hold disjoint ranges and grow 10x per level, so a compaction pulls one
+// file plus its overlapping neighbours. Below, the write vs read vs space
+// tradeoff across the three strategies.
+---
+<svg class="dgm lsm-cmp" viewBox="0 0 700 320" role="img" aria-label="Leveled compaction: L0 holds overlapping files from memtable flushes, L1 through L6 hold disjoint key ranges and each level is ten times larger than the one above, so a compaction picks one file and pulls the overlapping files from the next level down. Below, a tradeoff row shows leveled has low read and space amplification but high write amplification, size-tiered has low write amplification but higher read and space, and time-window suits append-mostly time-series by dropping whole windows.">
+  <defs>
+    <marker id="cmp-ah" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" class="dgm-arrow" />
+    </marker>
+  </defs>
+
+  <text x="10" y="22" class="dgm-title">Leveled · L0 to L6</text>
+  <text x="690" y="22" text-anchor="end" class="dgm-sub">each level 10x the one above</text>
+
+  <!-- L0: overlapping files -->
+  <text x="10" y="52" class="dgm-label">L0</text>
+  <rect x="46" y="38" width="70" height="22" rx="3" class="cmp-l0" />
+  <rect x="98" y="38" width="70" height="22" rx="3" class="cmp-l0" />
+  <rect x="150" y="38" width="70" height="22" rx="3" class="cmp-l0" />
+  <rect x="202" y="38" width="70" height="22" rx="3" class="cmp-l0" />
+  <text x="288" y="53" class="dgm-sub">flushes · ranges overlap</text>
+
+  <!-- L1..L6 disjoint, widening -->
+  <text x="10" y="82" class="dgm-label">L1</text>
+  <rect x="46" y="70" width="120" height="18" rx="3" class="cmp-lvl" />
+  <rect x="170" y="70" width="86" height="18" rx="3" class="cmp-lvl cmp-lvl--pick" />
+  <rect x="260" y="70" width="120" height="18" rx="3" class="cmp-lvl" />
+  <text x="396" y="83" class="dgm-sub">disjoint ranges</text>
+
+  <text x="10" y="110" class="dgm-label">L2</text>
+  <rect x="46" y="98" width="86" height="18" rx="3" class="cmp-lvl" />
+  <rect x="136" y="98" width="86" height="18" rx="3" class="cmp-lvl cmp-lvl--overlap" />
+  <rect x="226" y="98" width="86" height="18" rx="3" class="cmp-lvl cmp-lvl--overlap" />
+  <rect x="316" y="98" width="86" height="18" rx="3" class="cmp-lvl" />
+  <rect x="406" y="98" width="86" height="18" rx="3" class="cmp-lvl" />
+
+  <!-- pick one, pull overlapping from next level -->
+  <line x1="213" y1="88" x2="200" y2="96" class="dgm-line dgm-line--accent" marker-end="url(#cmp-ah)" />
+  <line x1="213" y1="88" x2="266" y2="96" class="dgm-line dgm-line--accent" marker-end="url(#cmp-ah)" />
+  <text x="516" y="100" class="dgm-sub dgm-sub--accent">pick 1 file · pull overlaps</text>
+
+  <text x="10" y="138" class="dgm-label">...</text>
+  <rect x="46" y="126" width="620" height="16" rx="3" class="cmp-lvl cmp-lvl--wide" />
+  <text x="356" y="138" text-anchor="middle" class="dgm-sub">L6 · the base level, largest and coldest</text>
+
+  <!-- tradeoff row -->
+  <line x1="10" y1="168" x2="690" y2="168" class="dgm-line" opacity="0.5" />
+  <text x="10" y="192" class="dgm-title">The tradeoff</text>
+
+  <!-- leveled -->
+  <rect x="10" y="204" width="220" height="96" rx="8" class="dgm-box dgm-box--accent" />
+  <text x="26" y="228" class="dgm-title">Leveled</text>
+  <text x="26" y="250" class="cmp-good">read amp low</text>
+  <text x="26" y="268" class="cmp-good">space amp low</text>
+  <text x="26" y="286" class="cmp-bad">write amp high</text>
+
+  <!-- size-tiered -->
+  <rect x="240" y="204" width="220" height="96" rx="8" class="dgm-box" />
+  <text x="256" y="228" class="dgm-title">Size-Tiered</text>
+  <text x="256" y="250" class="cmp-good">write amp low</text>
+  <text x="256" y="268" class="cmp-bad">read amp higher</text>
+  <text x="256" y="286" class="cmp-bad">space amp higher</text>
+
+  <!-- time-window -->
+  <rect x="470" y="204" width="220" height="96" rx="8" class="dgm-box" />
+  <text x="486" y="228" class="dgm-title">Time-Window</text>
+  <text x="486" y="250" class="dgm-sub">for time-series</text>
+  <text x="486" y="268" class="dgm-sub">STCS inside a window</text>
+  <text x="486" y="286" class="cmp-good">drop whole windows</text>
+
+  <style>
+    .lsm-cmp .cmp-l0 { fill: var(--paper-3); stroke: var(--ink); stroke-width: 1.3; }
+    .lsm-cmp .cmp-lvl { fill: var(--paper-2); stroke: var(--ink); stroke-width: 1.3; }
+    .lsm-cmp .cmp-lvl--pick { fill: color-mix(in srgb, var(--accent) 22%, var(--paper)); stroke: var(--accent); }
+    .lsm-cmp .cmp-lvl--overlap { fill: color-mix(in srgb, var(--accent) 12%, var(--paper)); stroke: var(--accent); }
+    .lsm-cmp .cmp-lvl--wide { fill: var(--paper-3); stroke: var(--ink); }
+    .lsm-cmp .cmp-good { fill: var(--ink); font-family: var(--font-mono); font-size: 12px; }
+    .lsm-cmp .cmp-bad { fill: var(--muted); font-family: var(--font-mono); font-size: 12px; }
+  </style>
+</svg>

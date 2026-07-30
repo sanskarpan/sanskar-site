@@ -1,0 +1,95 @@
+---
+// SSTable on-disk byte layout: sorted, prefix-compressed data blocks with a
+// restart array, then the Bloom filter block, the sparse index block, and a
+// fixed 48-byte footer whose magic number and handles point back at the file.
+---
+<svg class="dgm lsm-fmt" viewBox="0 0 700 340" role="img" aria-label="SSTable on-disk format: a run of prefix-compressed data blocks, each ending in a restart-offset array, then a Bloom filter block, a sparse index block mapping the last key of each data block to a block handle, and a fixed 48-byte footer holding the filter handle, index handle, zero padding, and an 8-byte magic number that a reader seeks to first.">
+  <defs>
+    <marker id="fmt-ah" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" class="dgm-arrow" />
+    </marker>
+  </defs>
+
+  <!-- top strip: the whole file left to right -->
+  <text x="10" y="24" class="dgm-title">SSTable file</text>
+  <text x="620" y="24" text-anchor="end" class="dgm-sub">read starts here</text>
+
+  <!-- data blocks region -->
+  <rect x="10" y="36" width="300" height="52" rx="6" class="fmt-region" />
+  <text x="20" y="58" class="dgm-label">data blocks 0..N</text>
+  <text x="20" y="76" class="dgm-sub">4KB · sorted · prefix-compressed</text>
+
+  <!-- filter -->
+  <rect x="316" y="36" width="120" height="52" rx="6" class="fmt-region" />
+  <text x="326" y="58" class="dgm-label">filter</text>
+  <text x="326" y="76" class="dgm-sub">Bloom bits</text>
+
+  <!-- index -->
+  <rect x="442" y="36" width="130" height="52" rx="6" class="fmt-region fmt-region--accent" />
+  <text x="452" y="58" class="dgm-label">index</text>
+  <text x="452" y="76" class="dgm-sub">sparse</text>
+
+  <!-- footer -->
+  <rect x="578" y="36" width="112" height="52" rx="6" class="fmt-region fmt-region--foot" />
+  <text x="588" y="58" class="dgm-label">footer</text>
+  <text x="588" y="76" class="dgm-sub">48 bytes</text>
+
+  <!-- footer points back -->
+  <path d="M600 88 C600 118, 380 118, 376 90" class="dgm-line dgm-line--accent" fill="none" marker-end="url(#fmt-ah)" />
+  <path d="M634 88 C634 132, 512 132, 507 90" class="dgm-line dgm-line--accent" fill="none" marker-end="url(#fmt-ah)" />
+  <text x="350" y="150" text-anchor="middle" class="dgm-sub dgm-sub--accent">handles point back at filter and index</text>
+
+  <!-- exploded data block -->
+  <text x="10" y="196" class="dgm-title">one data block</text>
+  <g class="fmt-bytes">
+    <rect x="10" y="206" width="118" height="40" rx="4" />
+    <text x="69" y="224" text-anchor="middle" class="fmt-cell">restart · full key</text>
+    <text x="69" y="238" text-anchor="middle" class="fmt-tag">entry 0</text>
+
+    <rect x="128" y="206" width="106" height="40" rx="4" />
+    <text x="181" y="224" text-anchor="middle" class="fmt-cell">shared prefix</text>
+    <text x="181" y="238" text-anchor="middle" class="fmt-tag">entry 1</text>
+
+    <rect x="234" y="206" width="106" height="40" rx="4" />
+    <text x="287" y="230" text-anchor="middle" class="fmt-cell">... to entry 15</text>
+
+    <rect x="340" y="206" width="118" height="40" rx="4" class="fmt-restart" />
+    <text x="399" y="224" text-anchor="middle" class="fmt-cell">restart · full key</text>
+    <text x="399" y="238" text-anchor="middle" class="fmt-tag">entry 16</text>
+
+    <rect x="482" y="206" width="208" height="40" rx="4" class="fmt-tail" />
+    <text x="586" y="224" text-anchor="middle" class="fmt-cell">restart offsets [ ] · count</text>
+    <text x="586" y="238" text-anchor="middle" class="fmt-tag">block tail</text>
+  </g>
+  <text x="10" y="266" class="dgm-sub">every 16th entry restarts with a full key so a reader binary-searches the tail array, then scans forward</text>
+
+  <!-- exploded footer -->
+  <text x="10" y="300" class="dgm-title">footer bytes</text>
+  <g class="fmt-bytes">
+    <rect x="120" y="284" width="150" height="34" rx="4" />
+    <text x="195" y="305" text-anchor="middle" class="fmt-cell">filter handle</text>
+
+    <rect x="270" y="284" width="150" height="34" rx="4" />
+    <text x="345" y="305" text-anchor="middle" class="fmt-cell">index handle</text>
+
+    <rect x="420" y="284" width="120" height="34" rx="4" class="fmt-pad" />
+    <text x="480" y="305" text-anchor="middle" class="fmt-cell">zero pad</text>
+
+    <rect x="540" y="284" width="150" height="34" rx="4" class="fmt-magic" />
+    <text x="615" y="301" text-anchor="middle" class="fmt-cell">magic 8B</text>
+    <text x="615" y="314" text-anchor="middle" class="fmt-tag">0x88e2..cff7</text>
+  </g>
+
+  <style>
+    .lsm-fmt .fmt-region { fill: var(--paper-2); stroke: var(--ink); stroke-width: 1.4; }
+    .lsm-fmt .fmt-region--accent { fill: color-mix(in srgb, var(--accent) 13%, var(--paper)); stroke: var(--accent); }
+    .lsm-fmt .fmt-region--foot { fill: var(--paper-3); stroke: var(--ink); }
+    .lsm-fmt .fmt-bytes rect { fill: var(--paper); stroke: var(--line); stroke-width: 1.2; }
+    .lsm-fmt .fmt-bytes rect.fmt-restart { stroke: var(--ink); stroke-width: 1.4; }
+    .lsm-fmt .fmt-bytes rect.fmt-tail { fill: var(--paper-2); stroke: var(--ink); }
+    .lsm-fmt .fmt-bytes rect.fmt-pad { fill: var(--paper-3); stroke: var(--line); }
+    .lsm-fmt .fmt-bytes rect.fmt-magic { fill: color-mix(in srgb, var(--accent) 13%, var(--paper)); stroke: var(--accent); }
+    .lsm-fmt .fmt-cell { fill: var(--ink); font-family: var(--font-mono); font-size: 11.5px; }
+    .lsm-fmt .fmt-tag { fill: var(--muted); font-family: var(--font-mono); font-size: 10px; }
+  </style>
+</svg>

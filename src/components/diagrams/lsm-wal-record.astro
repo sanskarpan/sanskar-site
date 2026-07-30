@@ -1,0 +1,65 @@
+---
+// WAL record: a 7-byte block header (CRC32, 2-byte length, 1-byte type) framing
+// the payload, with fsync before the write is acknowledged and a bad CRC on
+// replay truncating the torn trailing record.
+---
+<svg class="dgm lsm-wal" viewBox="0 0 700 250" role="img" aria-label="WAL record layout: a 7-byte header of a CRC32, a 2-byte length, and a 1-byte type, followed by the payload of an entry type, key length, key, value length, value, and sequence number. The append is fsynced before the write is acknowledged, and on replay a bad CRC truncates the torn trailing record.">
+  <defs>
+    <marker id="wal-ah" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" class="dgm-arrow" />
+    </marker>
+  </defs>
+
+  <text x="10" y="24" class="dgm-title">WAL record</text>
+  <text x="10" y="42" class="dgm-sub">LevelDB 32KB block framing</text>
+
+  <!-- header cells -->
+  <g class="wal-bytes">
+    <rect x="10" y="56" width="96" height="46" rx="4" class="wal-hdr" />
+    <text x="58" y="80" text-anchor="middle" class="wal-cell">CRC32</text>
+    <text x="58" y="95" text-anchor="middle" class="wal-tag">4 bytes</text>
+
+    <rect x="106" y="56" width="80" height="46" rx="4" class="wal-hdr" />
+    <text x="146" y="80" text-anchor="middle" class="wal-cell">length</text>
+    <text x="146" y="95" text-anchor="middle" class="wal-tag">2 bytes</text>
+
+    <rect x="186" y="56" width="70" height="46" rx="4" class="wal-hdr" />
+    <text x="221" y="80" text-anchor="middle" class="wal-cell">type</text>
+    <text x="221" y="95" text-anchor="middle" class="wal-tag">1 byte</text>
+
+    <!-- payload cells -->
+    <rect x="272" y="56" width="418" height="46" rx="4" class="wal-payload" />
+    <text x="481" y="76" text-anchor="middle" class="wal-cell">type · keyLen · key · valLen · value · seqNo</text>
+    <text x="481" y="93" text-anchor="middle" class="wal-tag">payload</text>
+  </g>
+
+  <!-- header brace -->
+  <line x1="10" y1="112" x2="256" y2="112" class="dgm-line" />
+  <text x="133" y="128" text-anchor="middle" class="dgm-sub">7-byte header</text>
+
+  <!-- type tags note -->
+  <text x="272" y="128" class="dgm-sub">Full or First · Middle · Last across blocks</text>
+
+  <!-- fsync before ack -->
+  <rect x="10" y="158" width="316" height="72" rx="8" class="dgm-box dgm-box--accent" />
+  <text x="26" y="184" class="dgm-title">fsync before ack</text>
+  <text x="26" y="204" class="dgm-sub dgm-sub--accent">append · flush buffer · file.Sync</text>
+  <text x="26" y="220" class="dgm-sub">then the write returns to the client</text>
+
+  <!-- torn write truncation -->
+  <rect x="374" y="158" width="316" height="72" rx="8" class="dgm-box dgm-box--dashed" />
+  <text x="390" y="184" class="dgm-title">torn-write truncation</text>
+  <text x="390" y="204" class="dgm-sub">replay verifies each CRC</text>
+  <text x="390" y="220" class="dgm-sub">bad CRC · stop · drop the tail</text>
+
+  <line x1="326" y1="194" x2="372" y2="194" class="dgm-line" marker-end="url(#wal-ah)" />
+  <text x="349" y="150" text-anchor="middle" class="dgm-sub">crash</text>
+
+  <style>
+    .lsm-wal .wal-bytes rect { fill: var(--paper); stroke: var(--line); stroke-width: 1.2; }
+    .lsm-wal .wal-bytes rect.wal-hdr { fill: var(--paper-2); stroke: var(--ink); stroke-width: 1.4; }
+    .lsm-wal .wal-bytes rect.wal-payload { fill: var(--paper-3); stroke: var(--ink); stroke-width: 1.4; }
+    .lsm-wal .wal-cell { fill: var(--ink); font-family: var(--font-mono); font-size: 12px; }
+    .lsm-wal .wal-tag { fill: var(--muted); font-family: var(--font-mono); font-size: 10px; }
+  </style>
+</svg>

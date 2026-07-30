@@ -1,27 +1,32 @@
 ---
 title: Writing an LSM-tree in Go
-description: Why write-heavy databases turn random writes into sequential ones, plus memtables, SSTables, Bloom filters, and the compaction trade-off, built from scratch to actually understand it.
+description: "A from-scratch LSM storage engine: the skip-list memtable, the on-disk SSTable format block by block, Bloom filters, platform-aware mmap, the WAL and crash recovery, three live-switchable compaction strategies, and the Raft layer that wraps the whole thing."
 date: 2026-05-11
+updated: 2026-07-30
 tags: ['go', 'storage', 'systems']
+draft: false
 ---
 
 import Figure from '../../components/diagrams/Figure.astro';
 import LsmWrite from '../../components/diagrams/LsmWrite.astro';
 import LsmRead from '../../components/diagrams/LsmRead.astro';
+import LsmSstableFormat from '../../components/diagrams/lsm-sstable-format.astro';
+import LsmWalRecord from '../../components/diagrams/lsm-wal-record.astro';
+import LsmCompaction from '../../components/diagrams/lsm-compaction.astro';
+import Mermaid from '../../components/Mermaid.astro';
+import Bars from '../../components/Bars.astro';
 
-Most databases you reach for to handle a firehose of writes (Cassandra, RocksDB, LevelDB, ScyllaDB) are **LSM-trees** underneath. I built one from scratch in Go because reading about compaction and *implementing* compaction are very different amounts of understanding.
-
-Here's the core idea, and the trade-off it's built around.
+Most databases you reach for to handle a firehose of writes (Cassandra, RocksDB, LevelDB, ScyllaDB) are **LSM-trees** underneath. I built one from scratch in Go because reading about compaction and *implementing* compaction are very different amounts of understanding. The engine ended up covering the full write and read paths, three compaction strategies, Bloom filters, a block cache, crash recovery, and a Raft replication layer that wraps the single-node engine behind one API. This is what I learned building each piece.
 
 ## The trick: never write randomly
 
-Disks (and SSDs) hate random writes. A B-tree updates data in place, which means seeking all over the file. An **LSM-tree** refuses to do that. Every write is appended to a **write-ahead log** for durability, and inserted into an in-memory sorted structure, the **memtable**. When the memtable fills, it's flushed to disk **sequentially** as an immutable **SSTable** (sorted string table).
+Disks (and SSDs) hate random writes. A B-tree updates data in place, which means seeking all over the file. An LSM-tree refuses to do that. Every write is appended to a **write-ahead log** for durability, and inserted into an in-memory sorted structure, the **memtable**. When the memtable fills, it flushes to disk **sequentially** as an immutable **SSTable** (sorted string table).
 
 <Figure label="Fig 1" caption="The write path. Both steps are cheap and sequential; a full memtable flushes to an immutable SSTable.">
   <LsmWrite />
 </Figure>
 
-You never modify an SSTable; you only ever write new ones.
+You never modify an SSTable. You only ever write new ones.
 
 ```go
 func (t *Tree) Put(key, val []byte) error {
@@ -36,43 +41,291 @@ func (t *Tree) Put(key, val []byte) error {
 }
 ```
 
-Writes are now sequential and fast. But we've pushed the cost somewhere: **reads**.
+Writes are now sequential and fast. But we have pushed the cost somewhere. That somewhere is reads, and most of the engine's complexity exists to buy it back.
 
-## Reads pay the bill
+## The memtable is a skip list, not a tree
 
-A key might be in the memtable, or in *any* of the SSTables on disk, newest first. A naive read checks all of them, and that's a lot of disk I/O. Two structures rescue it.
+The memtable needs sorted iteration (for flushing in key order) and fast point lookups, and it takes concurrent inserts. I used a skip list rather than a balanced tree because the probabilistic balancing is far simpler to get right than rotations, and it gives O(log n) insert and search without a rebalance pass. `MaxLevel = 12`, promotion probability `P = 0.25`, which supports roughly 4^12 entries before the top level saturates.
 
-<Figure label="Fig 2" caption="A Bloom filter answers 'no' for most SSTables in memory, so their disk blocks are never touched.">
+```go
+const (
+    MaxLevel    = 12
+    Probability = 0.25
+)
+
+func (sl *SkipList) randomLevel() int {
+    level := 1
+    for level < MaxLevel && sl.rng.Float64() < Probability {
+        level++
+    }
+    return level
+}
+```
+
+The keys are not raw user keys. Everything in the engine is keyed by an **InternalKey**: the user key, a monotonic sequence number, and a type tag (value or tombstone). The sort order is the load-bearing detail:
+
+```go
+// Sort order: UserKey ASC, then SeqNo DESC (newer = found first).
+func (a InternalKey) Less(b InternalKey) bool {
+    cmp := bytes.Compare(a.UserKey, b.UserKey)
+    if cmp != 0 {
+        return cmp < 0
+    }
+    return a.SeqNo > b.SeqNo // CRITICAL: higher SeqNo sorts FIRST
+}
+```
+
+Because a higher sequence number sorts first, a lookup that scans forward hits the newest version of a key before any older one. Deletes are not a physical removal, they are a tombstone: an InternalKey with `TypeDeletion` and no value. The delete is just another write, which is what keeps the write path append-only.
+
+When the memtable crosses its size threshold (64 MB by default), the engine does not flush in place. It **rotates**: the active memtable becomes immutable and is pushed onto a queue, a fresh memtable takes new writes, and a background `FlushWorker` goroutine drains the queue to disk. This keeps the write path from blocking on disk I/O. The queue has a bound (`max_immutable_memtables: 2`), and once it is full, writes stall on purpose. That backpressure is a feature: it stops the engine from buffering unbounded data in RAM when disk cannot keep up.
+
+## The SSTable, block by block
+
+An SSTable is the on-disk shape of a flushed memtable, and getting the format right is where most of the interesting decisions live. Reading top to bottom, a file is: a run of **data blocks**, then a **filter block** (the Bloom filter), then an **index block**, then a fixed **footer**.
+
+<Mermaid label="Fig 2" caption="SSTable layout on disk. Data blocks first, then the Bloom filter, then the sparse index, then a fixed footer that points back at the filter and index." chart={`
+flowchart LR
+  D0["data block 0<br/>4KB sorted"] --> D1["data block 1"]
+  D1 --> Dn["data block N"]
+  Dn --> F["filter block<br/>Bloom"]
+  F --> IX["index block<br/>sparse"]
+  IX --> FT["footer<br/>48 bytes"]
+  FT -.points to.-> F
+  FT -.points to.-> IX
+`} />
+
+**Data blocks** target 4 KB and are prefix-compressed. Because keys arrive sorted, adjacent keys share long prefixes, so each entry stores only the bytes that differ from the previous one: a shared-length, an unshared-length, the value length, then the unshared key bytes and the value. To keep the block randomly seekable despite prefix compression, every 16th entry is a **restart point** that stores its full key. The restart offsets are packed into an array at the tail of the block, so a reader can binary-search the restarts and then scan forward a handful of entries.
+
+```go
+const RestartInterval = 16
+
+func (b *BlockBuilder) Add(key InternalKey, value []byte) {
+    encodedKey := encodeKey(key)
+    shared := 0
+    if b.counter < b.restartInterval {
+        for shared < len(b.lastKey) && shared < len(encodedKey) &&
+            b.lastKey[shared] == encodedKey[shared] {
+            shared++
+        }
+    } else {
+        // Restart point: store the full key, reset the prefix base.
+        b.restarts = append(b.restarts, uint32(len(b.buf)))
+        b.counter = 0
+    }
+    unshared := len(encodedKey) - shared
+    b.buf = appendVarint(b.buf, uint64(shared))
+    b.buf = appendVarint(b.buf, uint64(unshared))
+    b.buf = appendVarint(b.buf, uint64(len(value)))
+    b.buf = append(b.buf, encodedKey[shared:]...)
+    b.buf = append(b.buf, value...)
+    b.lastKey = append(b.lastKey[:0], encodedKey...)
+    b.counter++
+}
+```
+
+The **index block** is sparse: one entry per data block, mapping the last key of that block to a `BlockHandle` (an offset and a size). It is itself a block, but built with a restart interval of 1, so every index entry stores its full key. Sparse is the whole point. The index for a 64 MB SSTable is a few thousand entries, small enough to keep resident in memory, so a lookup binary-searches the index in RAM to find exactly one data block to touch on disk.
+
+The **footer** is a fixed 48 bytes at the very end: the filter handle, the index handle, zero padding, and an 8-byte magic number (`0x88e241b785f4cff7`). A reader opens the file by seeking to `fileSize - 48`, checking the magic to detect a truncated or corrupt file, then following the two handles to load the index and filter. A wrong magic number fails the open loudly rather than parsing garbage.
+
+<Figure label="Fig 3" caption="The byte layout the format actually writes. A data block interleaves prefix-compressed entries with full-key restarts and ends in a restart-offset array; the footer's handles and magic number are what the reader seeks to first.">
+  <LsmSstableFormat />
+</Figure>
+
+## Bloom filters, and why the asymmetry fits reads
+
+A point read might need to check *any* SSTable, because a key could live in any of them. Touching every file's disk blocks would make reads unbearable. The Bloom filter is the escape hatch: a small bit array per SSTable that answers "might this key be here?" with either *definitely not* or *maybe*.
+
+<Figure label="Fig 4" caption="A Bloom filter answers 'no' for most SSTables in memory, so their disk blocks are never touched.">
   <LsmRead />
 </Figure>
 
-- **Bloom filters:** a tiny probabilistic set per SSTable. Ask "might this key be here?" and get back *definitely not* or *maybe*. Most SSTables answer *definitely not* in memory, so you never touch their disk blocks.
-- **Sparse block index:** SSTables are stored as sorted, prefix-compressed blocks; a small in-memory index jumps you to the right block.
+> A Bloom filter can say "maybe" when the answer is "no" (a false positive), but it never says "no" when the answer is "yes." That asymmetry is exactly what a read path wants: a false positive costs one wasted block read, but a false negative would lose data.
 
-> A Bloom filter can say "maybe" when the answer is "no" (a false positive), but it never says "no" when the answer is "yes." That asymmetry is exactly what a read path wants.
+The implementation is LevelDB-compatible. It derives the number of hash functions from the bits-per-key setting (`k = bitsPerKey * ln 2`, clamped) and uses the double-hashing trick, deriving all `k` bit positions from a single hash plus a rotated delta, so it hashes each key once:
+
+```go
+func NewBloomFilter(keys [][]byte, bitsPerKey int) *BloomFilter {
+    k := int(float64(bitsPerKey) * math.Ln2)
+    // ...
+    for _, key := range keys {
+        h := bloomHash(key)
+        delta := (h >> 17) | (h << 15) // rotate to derive independent positions
+        for j := 0; j < k; j++ {
+            bitPos := uint32(h) % uint32(nBits)
+            bits[bitPos/8] |= 1 << (bitPos % 8)
+            h += delta
+        }
+    }
+    bits[len(bits)-1] = byte(k) // store k as the last byte
+}
+```
+
+The default is 10 bits per key, which puts the false-positive rate near 1%. That is the classic trade curve: more bits per key means fewer false positives and more memory. The relationship is roughly the following, and it is mathematical, not measured on this engine:
+
+<Bars label="Fig 5" caption="Bloom false-positive rate versus bits per key, at the optimal number of hash functions. These are the theoretical rates for the filter design, not benchmarks of this engine. The default is 10 bits per key." bars={[
+  { label: "6 bits/key", value: 5.6, display: "~5.6%" },
+  { label: "8 bits/key", value: 2.1, display: "~2.1%" },
+  { label: "10 bits/key", value: 0.8, display: "~0.8%", accent: true },
+  { label: "12 bits/key", value: 0.3, display: "~0.3%" },
+]} max={6} />
+
+In the read path the filter runs first. If it says *definitely not*, the SSTable's data blocks are never read, and the engine emits a `bloom_miss` event that the dashboard renders. Only on a *maybe* does it binary-search the index and load a block.
+
+## Platform-aware mmap
+
+An SSTable is immutable once written, which makes it a natural fit for **memory mapping**. On open, the reader mmaps the whole file so that block reads become zero-copy slices into the mapped region rather than syscalls. Since flushes and compaction scan blocks in key order, the reader hints the kernel with `MADV_SEQUENTIAL` so it reads ahead aggressively:
+
+```go
+//go:build !windows
+
+func mmapFile(f *os.File) ([]byte, error) {
+    st, _ := f.Stat()
+    return unix.Mmap(int(f.Fd()), 0, int(st.Size()),
+        unix.PROT_READ, unix.MAP_SHARED)
+}
+
+func madviseSequential(data []byte) error {
+    return unix.Madvise(data, unix.MADV_SEQUENTIAL)
+}
+```
+
+On Linux, closing a reader after a compaction calls `POSIX_FADV_DONTNEED` to evict that file's pages from the page cache, because a just-compacted file is dead and there is no reason to let it hold cache the live files want. Windows has no `mmap` in this codebase, so `mmapFile` returns nil there and the reader transparently falls back to `ReadAt`: functionally identical, one syscall per block read. The whole thing is wired with build tags (`reader_mmap_unix.go`, `reader_mmap_linux.go`, `reader_mmap_windows.go`), so each platform gets exactly the primitives it supports and the rest are no-ops. The reader does not branch on the platform at runtime, and `mmap` failure is treated as best-effort: if it fails, the reader silently uses `ReadAt` and keeps working.
 
 ## The WAL and crash recovery
 
-The memtable lives in RAM, so a crash between a write and the next flush would lose data, except that the write-ahead log already has it. On startup, the engine **replays the WAL** to rebuild the memtable exactly as it was, then discards the log segments whose data has since been flushed to SSTables.
+The memtable lives in RAM, so a crash between a write and the next flush would lose data, except that the write-ahead log already has it. The WAL uses the LevelDB 32 KB block format. Each record has a 7-byte header (a CRC32 of the payload, a 2-byte length, a 1-byte type) and records that do not fit in the current block are fragmented across blocks with `First` / `Middle` / `Last` type tags, or written whole as `Full`.
 
-The correctness detail that bites everyone: the WAL append has to be **durable before you acknowledge the write** (an `fsync`, or a batched group commit), and each record needs a **checksum** so a torn write from a mid-crash append is detected and truncated on replay rather than silently corrupting the memtable. Get the ordering wrong and you have a database that's fast and occasionally lying.
+```go
+crc := crc32.ChecksumIEEE(chunk)
+header := [HeaderSize]byte{}
+binary.LittleEndian.PutUint32(header[0:], crc)
+binary.LittleEndian.PutUint16(header[4:], uint16(chunkLen))
+header[6] = rType // Full | First | Middle | Last
+```
+
+<Figure label="Fig 6" caption="A WAL record: a 7-byte header framing the payload. The append is fsynced before the write is acknowledged, and on replay a bad CRC stops the reader and truncates the torn trailing record.">
+  <LsmWalRecord />
+</Figure>
+
+Two correctness details are the ones that bite everyone.
+
+**Fsync before ack.** The WAL append has to be durable before the write is acknowledged. With `sync_wal: true`, `Sync()` flushes the buffer to the OS and then calls `file.Sync()` (the actual `fsync`) before the write returns. Get the ordering wrong and you have a database that is fast and occasionally lying about what it stored.
+
+**Per-record CRC, torn-write truncation on replay.** On startup the recovery reader walks the log block by block, verifying the CRC of every record. The moment it hits a bad CRC or a length that runs past the end of the block (the signature of a torn write, a crash mid-append), it stops and returns everything up to that point:
+
+```go
+crcComputed := crc32.ChecksumIEEE(payload)
+if crcComputed != crcStored {
+    goto done // corrupt record, stop and truncate the tail
+}
+```
+
+That truncation is the correct behavior, not a bug. A half-written trailing record is a write that was never acknowledged, so dropping it loses nothing the client was promised, and keeping it would corrupt the rebuilt memtable. Recovery replays the surviving entries to reconstruct the memtable exactly, then the MANIFEST replay reconstructs which SSTables live at which level, and the engine is back where it was.
 
 ## Compaction: the real trade-off
 
-SSTables pile up. Old versions of keys and tombstones (deletes) accumulate. **Compaction** merges SSTables in the background, dropping shadowed values, reclaiming space and keeping reads fast.
+SSTables pile up. Old versions of keys and tombstones accumulate. **Compaction** merges SSTables in the background, dropping shadowed values, reclaiming space, and keeping reads fast. The strategy you pick *is* the write-versus-read-versus-space trade-off, and I made all three live-switchable so I could watch amplification move as I flipped between them.
 
-The strategy you pick *is* the write-vs-read-vs-space trade-off:
+<Mermaid label="Fig 7" caption="The three strategies sit at different corners of the trade-off. Leveled keeps reads and space tight at the cost of write work; size-tiered does the opposite; time-window is a specialization for append-mostly data." chart={`
+flowchart TB
+  W["writes pile up<br/>SSTables accumulate"] --> C{"compaction<br/>strategy"}
+  C --> L["Leveled<br/>low read amp<br/>low space amp"]
+  C --> S["Size-Tiered<br/>low write amp<br/>higher space"]
+  C --> T["Time-Window<br/>for time-series<br/>drop whole windows"]
+`} />
 
-| Strategy | Optimises for | Cost |
-| --- | --- | --- |
-| **Leveled** | reads + space | higher write amplification |
-| **Size-tiered** | writes | more space, worse reads |
-| **Time-window** | time-series | assumes append-mostly data |
+**Leveled** organizes SSTables into levels L0 through L6, each 10x larger than the last (`level_size_multiplier: 10`). L0 is special: its files come straight from memtable flushes and can have overlapping key ranges, so a compaction from L0 takes *all* of them. From L1 down, each level's files have disjoint ranges, so picking one file and pulling in only the overlapping files from the next level keeps the merge bounded:
 
-I made all three live-switchable, which turned an abstract table like the one above into something I could actually *feel* by watching write amplification move.
+```go
+if inputLevel == 0 {
+    inputs = append(inputs, levels[0]...) // L0 files overlap, take all
+} else {
+    inputs = []*sstable.SSTableMeta{levels[inputLevel][0]}
+}
+// then add overlapping files from the output level
+for _, m := range levels[outputLevel] {
+    if overlaps(m.FirstKey, m.LastKey, minKey, maxKey) {
+        inputs = append(inputs, m)
+    }
+}
+```
 
-## Where it got interesting
+Leveled keeps read and space amplification low because a key lives in at most one file per level, but it rewrites data many times as it cascades down, so write amplification is high. L0 also has a `level0_file_num_compaction_trigger: 4` (start compacting) and a `level0_stop_writes_trigger: 12` (stall writes entirely), so L0 cannot grow without bound and drag reads down with it.
 
-The single-node engine was the warm-up. Adding **Raft** for quorum replication, and then multi-Raft to shard the keyspace across groups, is where "I read about this" became "I understand this." Consensus has a way of punishing every fuzzy assumption you made about ordering and failure.
+<Figure label="Fig 8" caption="Leveled compaction picks one file and pulls only the overlapping files from the next level, keeping the merge bounded once ranges are disjoint below L0. The row underneath is where each strategy pays: leveled trades write work for tight reads and space, size-tiered does the reverse, time-window drops whole cold windows.">
+  <LsmCompaction />
+</Figure>
 
-The [full engine is on GitHub](https://github.com/sanskarpan/lsm-tree-storage). Next I'll break down the on-disk SSTable format, block by block.
+**Size-tiered** groups SSTables into buckets of similar size and merges a bucket once enough files accumulate. It writes each byte far fewer times (low write amplification), but the same key can sit in several tiers at once, which costs read and space amplification. It is the write-optimized corner.
+
+**Time-window** groups SSTables by the time window in which they were created and compacts within a window, running size-tiered inside each closed window and leaving the active window alone:
+
+```go
+for _, ts := range windowStarts {
+    if ts == currentWindowStart.UnixNano() {
+        continue // never touch the active window
+    }
+    // run STCS within this closed window
+}
+```
+
+For append-mostly time-series data this is the right shape: old windows go cold and stop being rewritten, and expiring old data becomes dropping whole windows rather than a scattered compaction. It assumes the workload is time-ordered, and it is a poor fit for anything else.
+
+## Write and read amplification, measured live
+
+The engine tracks the amplification numbers directly off its event bus, which is what made the trade-offs concrete instead of abstract:
+
+- **Write amplification** = bytes written to disk / bytes handed in by the client. WAL, flushes, and compaction outputs all count against you. Leveled compaction runs this high.
+- **Read amplification** = disk block reads per query. The Bloom filter and sparse index exist to drive this toward 1.
+- **Space amplification** = total on-disk bytes / live data bytes. Tombstones and shadowed versions inflate it until compaction reclaims them.
+
+```go
+func (s *AmplificationStats) WA() float64 {
+    c := atomic.LoadUint64(&s.ClientBytesWritten)
+    if c == 0 {
+        return 1.0
+    }
+    return float64(atomic.LoadUint64(&s.DiskBytesWritten)) / float64(c)
+}
+```
+
+Flipping compaction strategy live and watching write amplification jump on the dashboard is the moment the table in every LSM paper stopped being a table.
+
+## Design targets, not measured guarantees
+
+The README carries a set of **design targets** for modern SSD hardware. I want to be precise about the label: these are the numbers the engine is built to hit, not benchmark results checked in to the repo. The benchmark harness exists (`make bench`, with `BenchmarkWALAppend`, `BenchmarkSkipListInsert`, `BenchmarkEngineSequentialWrite` and others), but the results table in the README is still a template, so I am not going to quote a throughput I cannot show you the measurement for.
+
+| Metric | Design target |
+| --- | --- |
+| Write throughput, sequential, `sync_wal: false` | > 200,000 ops/s |
+| Write throughput, with fsync, SSD | > 20,000 ops/s |
+| Point read, key in L1, warm block cache | < 100 µs |
+| Point read, not found, Bloom short-circuit | < 50 µs |
+| Bloom false-positive rate, 10 bits/key | < 1% |
+| MemTable flush, 64 MB | < 200 ms |
+| L0 to L1 compaction, 4 L0 files | < 2 s |
+| Block cache hit rate, random workload | > 70% |
+| Range scan, 1,000 keys | < 10 ms |
+
+The two throughput numbers are the whole LSM thesis in one line. Without fsync the write path is bound by the skip-list insert and the sequential append, so the target is an order of magnitude higher; with fsync on every write, you are bound by how fast the disk can durably flush, and an order of magnitude falls away. That gap is the price of durability, made visible.
+
+## Wrapping the single-node engine in Raft
+
+The single-node engine was the warm-up. The interesting part was making it survive a node dying without becoming a different database. The HTTP gateway never writes to the raw engine. It writes through a **cluster node** facade, and in clustered mode that facade is Raft-backed.
+
+<Mermaid label="Fig 9" caption="The gateway writes through a cluster facade, never the raw engine. In clustered mode, writes go through Raft consensus and each node applies committed commands into its own local LSM engine." chart={`
+flowchart TB
+  API["HTTP gateway"] --> N["cluster node<br/>facade"]
+  N --> RAFT["Raft group<br/>leader + quorum"]
+  RAFT -->|apply committed| E1["engine · node 1"]
+  RAFT -->|apply committed| E2["engine · node 2"]
+  RAFT -->|apply committed| E3["engine · node 3"]
+`} />
+
+Writes are leader-routed and quorum-committed. A follower that receives a write rejects it with the current leader's metadata so the client can redirect. Every committed logical command is applied deterministically into each node's local LSM engine, which is the single-node engine described above, unchanged. The FSM checkpoints its last applied log index and uses Raft snapshots to bound replay, so a node that lost its local files can be restored from a snapshot rather than replaying all of history. Reads support both `linearizable` (forwarded to the leader) and `eventual` modes.
+
+On top of that sits **multi-Raft sharding**: several Raft groups running behind the same API server, with requests routed by key hash through a slot map stored in cluster metadata, and hot slots rebalanced across the local groups. One API surface, many consensus groups underneath. It is still single-shard-per-request, not a full distributed query engine, and I would rather state that limit than oversell it.
+
+Consensus has a way of punishing every fuzzy assumption you made about ordering and failure, and wiring it around a storage engine I had already written is what turned "I read the Raft paper" into "I understand the Raft paper."
+
+The [full engine is on GitHub](https://github.com/sanskarpan/lsm-tree-storage), including the 7-panel real-time dashboard that renders every event described here (WAL appends, Bloom checks, flushes, compactions) as it happens.
