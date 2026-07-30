@@ -1,0 +1,42 @@
+---
+import Base from '../../layouts/Base.astro';
+import ProjectCard from '../../components/ProjectCard.astro';
+import { PROJECTS, THEMES } from '../../data/projects';
+
+const grouped = THEMES.map((t) => ({
+  theme: t,
+  items: PROJECTS.filter((p) => p.theme === t),
+})).filter((g) => g.items.length > 0);
+const total = PROJECTS.length;
+---
+
+<Base title="All projects" description="The full catalogue: storage engines, distributed systems, infrastructure, concurrency, ML, and applications, grouped by theme.">
+  <div class="wrap">
+    <section class="hero" style="padding-block: 3.5rem 1rem;">
+      <p class="label hero__eyebrow rise rise-1">
+        <a href="/projects" style="color:var(--muted);">← selected work</a>
+      </p>
+      <h1 class="rise rise-2">All projects</h1>
+      <p class="hero__lede rise rise-3" style="margin-top:1rem;">
+        Everything worth showing, {total} in all, grouped by theme. Most are open
+        source; a few ship a live demo or a docs site.
+      </p>
+    </section>
+
+    {grouped.map((g, i) => (
+      <section class={`section rise rise-${Math.min(i + 4, 6)}`} style={i === 0 ? 'border-top:0; padding-top:0.5rem;' : ''}>
+        <div class="section__head">
+          <p class="label" style="margin:0;">{g.theme}</p>
+          <span class="more" style="color:var(--muted);">{g.items.length}</span>
+        </div>
+        <div class="cards">
+          {g.items.map((p) => <ProjectCard project={p} />)}
+        </div>
+      </section>
+    ))}
+
+    <p class="muted" style="margin-top:1.75rem; font-family: var(--font-mono); font-size:0.78rem;">
+      More on <a href="https://github.com/sanskarpan" style="color:var(--accent);">github.com/sanskarpan</a> ↗
+    </p>
+  </div>
+</Base>

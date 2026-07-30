@@ -1,0 +1,16 @@
+---
+import type { Project } from '../data/projects';
+const { project: p } = Astro.props as { project: Project };
+---
+<div class="card">
+  <div class="card__top">
+    <a class="card__name card__link" href={p.href} rel="noopener">{p.name}</a>
+    <div class="card__tags">
+      {p.badge && <span class="card__badge">{p.badge}</span>}
+      {p.demo && <a class="card__demo" href={p.demo} rel="noopener">Demo ↗</a>}
+      {p.docs && <a class="card__docs" href={p.docs} rel="noopener">Docs ↗</a>}
+    </div>
+  </div>
+  <p class="card__desc">{p.blurb}</p>
+  <span class="card__stack">{p.stack}</span>
+</div>

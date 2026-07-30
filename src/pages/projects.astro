@@ -1,34 +1,32 @@
 ---
 import Base from '../layouts/Base.astro';
+import ProjectCard from '../components/ProjectCard.astro';
 import { PROJECTS } from '../data/projects';
+
+// The main projects page: a tight, high-signal shortlist.
+// The full, theme-grouped catalogue lives at /projects/all.
+const shortlist = PROJECTS.filter((p) => p.flat);
+const total = PROJECTS.length;
 ---
 
-<Base title="Projects" description="Storage engines, LLM tooling, payment infra, and distributed systems, mostly open source.">
+<Base title="Projects" description="Storage engines, distributed systems, agent tooling, and payment infra, mostly open source.">
   <div class="wrap">
     <section class="hero" style="padding-block: 3.5rem 1rem;">
       <p class="label hero__eyebrow rise rise-1">Selected work</p>
       <h1 class="rise rise-2">Projects</h1>
       <p class="hero__lede rise rise-3" style="margin-top:1rem;">
-        A curated slice: storage engines and distributed systems in Go, LLM/agent
-        tooling in Python, and a few things that don&rsquo;t fit a box. Most are open source.
+        A short list of the work I&rsquo;d point a stranger at first: storage engines
+        and distributed systems in Go, agent and LLM tooling in Python, and a payment
+        platform. Most are open source.
       </p>
     </section>
 
     <section class="section rise rise-4" style="border-top:0; padding-top:0;">
       <div class="cards">
-        {PROJECTS.map((p) => (
-          <a class="card" href={p.href} rel="noopener">
-            <div class="card__top">
-              <span class="card__name">{p.name}</span>
-              {p.badge && <span class="card__badge">{p.badge}</span>}
-            </div>
-            <p class="card__desc">{p.blurb}</p>
-            <span class="card__stack">{p.stack}</span>
-          </a>
-        ))}
+        {shortlist.map((p) => <ProjectCard project={p} />)}
       </div>
-      <p class="muted" style="margin-top:1.5rem; font-family: var(--font-mono); font-size:0.78rem;">
-        More on <a href="https://github.com/sanskarpan" style="color:var(--accent);">github.com/sanskarpan</a> ↗
+      <p style="margin-top:1.75rem; font-family: var(--font-mono); font-size:0.82rem;">
+        <a href="/projects/all" style="color:var(--accent);">Browse all {total} projects, grouped by theme →</a>
       </p>
     </section>
   </div>
