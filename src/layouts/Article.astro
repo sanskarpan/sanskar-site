@@ -175,7 +175,9 @@ const toc = headings.filter((h) => h.depth === 2 || h.depth === 3);
         btn.textContent = '⤢ expand';
         btn.setAttribute('aria-label', 'Expand diagram to full screen');
         btn.addEventListener('click', function () { openFigure(frame); });
-        frame.appendChild(btn);
+        // attach to the outer figure (not the scrolling frame) so it stays pinned
+        // to the visible top-right on mobile instead of scrolling with wide diagrams
+        (frame.parentElement || frame).appendChild(btn);
       });
 
       // hover-reveal anchor link on section headings
