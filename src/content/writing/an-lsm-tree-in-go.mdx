@@ -1,8 +1,8 @@
 ---
 title: Writing an LSM-tree in Go
 description: "A from-scratch LSM storage engine: the skip-list memtable, the on-disk SSTable format block by block, Bloom filters, platform-aware mmap, the WAL and crash recovery, three live-switchable compaction strategies, and the Raft layer that wraps the whole thing."
-date: 2026-05-11
-updated: 2026-07-31
+date: 2026-07-01
+updated: 2026-08-02
 tags: ['go', 'storage', 'systems']
 draft: false
 ---
@@ -90,8 +90,8 @@ flowchart LR
   Dn --> F["filter block<br/>Bloom"]
   F --> IX["index block<br/>sparse"]
   IX --> FT["footer<br/>48 bytes"]
-  FT -.points to.-> F
-  FT -.points to.-> IX
+  FT -.-> F
+  FT -.-> IX
 `} />
 
 **Data blocks** target 4 KB and are prefix-compressed. Because keys arrive sorted, adjacent keys share long prefixes, so each entry stores only the bytes that differ from the previous one: a shared-length, an unshared-length, the value length, then the unshared key bytes and the value. To keep the block randomly seekable despite prefix compression, every 16th entry is a **restart point** that stores its full key. The restart offsets are packed into an array at the tail of the block, so a reader can binary-search the restarts and then scan forward a handful of entries.
@@ -125,7 +125,7 @@ func (b *BlockBuilder) Add(key InternalKey, value []byte) {
 
 The **index block** is sparse: one entry per data block, mapping the last key of that block to a `BlockHandle` (an offset and a size). It is itself a block, but built with a restart interval of 1, so every index entry stores its full key. Sparse is the whole point. The index for a 64 MB SSTable is a few thousand entries, small enough to keep resident in memory, so a lookup binary-searches the index in RAM to find exactly one data block to touch on disk.
 
-The **footer** is a fixed 48 bytes at the very end: the filter handle, the index handle, zero padding, and an 8-byte magic number (`0x88e241b785f4cff7`). A reader opens the file by seeking to `fileSize - 48`, checking the magic to detect a truncated or corrupt file, then following the two handles to load the index and filter. A wrong magic number fails the open loudly rather than parsing garbage.
+The **footer** is a fixed 48 bytes at the very end: the filter handle, the index handle, a format-version field, zero padding, and an 8-byte magic number (`0x88e241b785f4cff7`). A reader opens the file by seeking to `fileSize - 48`, checking the magic to detect a truncated or corrupt file, then following the two handles to load the index and filter. A wrong magic number fails the open loudly rather than parsing garbage.
 
 <Figure label="Fig 3" caption="The byte layout the format actually writes. A data block interleaves prefix-compressed entries with full-key restarts and ends in a restart-offset array; the footer's handles and magic number are what the reader seeks to first.">
   <LsmSstableFormat />
@@ -160,14 +160,13 @@ func NewBloomFilter(keys [][]byte, bitsPerKey int) *BloomFilter {
 }
 ```
 
-The default is 10 bits per key, which puts the false-positive rate near 1%. That is the classic trade curve: more bits per key means fewer false positives and more memory. The relationship is the following, and the engine's empirical rates in `docs/benchmarks.md` track it closely, about 8% at 6 bits, 1% at the default 10, and 0.3% at 14:
+The default is 10 bits per key, which puts the false-positive rate near 1%. That is the classic trade curve: more bits per key means fewer false positives and more memory. The engine's measured rates in `docs/benchmarks.md`, about 8% at 6 bits, 1% at the default 10, and 0.3% at 14, follow the theoretical curve and run a little above it at the low end, where real key distributions are not the idealized model:
 
-<Bars label="Fig 5" caption="Bloom false-positive rate versus bits per key, at the optimal number of hash functions. This is the theoretical curve for the filter design; the engine's measured rates match it closely. The default is 10 bits per key." bars={[
-  { label: "6 bits/key", value: 5.6, display: "~5.6%" },
-  { label: "8 bits/key", value: 2.1, display: "~2.1%" },
-  { label: "10 bits/key", value: 0.8, display: "~0.8%", accent: true },
-  { label: "12 bits/key", value: 0.3, display: "~0.3%" },
-]} max={6} />
+<Bars label="Fig 5" caption="Bloom false-positive rate versus bits per key, measured on the engine (docs/benchmarks.md). It follows the theoretical curve and runs a little above it at low bit counts. The default is 10 bits per key." bars={[
+  { label: "6 bits/key", value: 8, display: "~8%" },
+  { label: "10 bits/key", value: 1, display: "~1%", accent: true },
+  { label: "14 bits/key", value: 0.3, display: "~0.3%" },
+]} max={9} />
 
 In the read path the filter runs first. If it says *definitely not*, the SSTable's data blocks are never read, and the engine emits a `bloom_miss` event that the dashboard renders. Only on a *maybe* does it binary-search the index and load a block.
 
@@ -189,7 +188,7 @@ func madviseSequential(data []byte) error {
 }
 ```
 
-On Linux, closing a reader after a compaction calls `POSIX_FADV_DONTNEED` to evict that file's pages from the page cache, because a just-compacted file is dead and there is no reason to let it hold cache the live files want. Windows has no `mmap` in this codebase, so `mmapFile` returns nil there and the reader transparently falls back to `ReadAt`: functionally identical, one syscall per block read. The whole thing is wired with build tags (`reader_mmap_unix.go`, `reader_mmap_linux.go`, `reader_mmap_windows.go`), so each platform gets exactly the primitives it supports and the rest are no-ops. The reader does not branch on the platform at runtime, and `mmap` failure is treated as best-effort: if it fails, the reader silently uses `ReadAt` and keeps working.
+On Linux, closing a reader after a compaction calls `POSIX_FADV_DONTNEED` to evict that file's pages from the page cache, because a just-compacted file is dead and there is no reason to let it hold cache the live files want. Windows has no `mmap` in this codebase, so `mmapFile` returns nil there and the reader transparently falls back to `ReadAt`: functionally identical, one syscall per block read. The whole thing is wired with build tags (`reader_mmap_unix.go`, `reader_mmap_linux.go`, `reader_mmap_windows.go`, `reader_mmap_other.go`), so each platform gets exactly the primitives it supports and the rest are no-ops. The reader does not branch on the platform at runtime, and `mmap` failure is treated as best-effort: if it fails, the reader silently uses `ReadAt` and keeps working.
 
 ## The WAL and crash recovery
 
@@ -317,7 +316,7 @@ The repo now checks in real measurements too, in `docs/benchmarks.md`, taken on 
   { label: "seq, with fsync", value: 20, display: "~20K ops/s" },
 ]} max={110} />
 
-The fsync path hit its target almost exactly, near 20K ops/s, bounded by a 50 to 200 µs NVMe fsync issued once per write, so throughput is roughly `1 / fsync_latency` and there is nowhere to hide. The no-fsync path came in near 100K ops/s, about half the target, which is the more instructive result: the target assumed the write path was pure skip-list insert plus sequential append, and the measured number is what happens once real allocation, cache traffic, and the Go scheduler all get a vote. Reads behave as designed: a block-cache hit is about 50 µs at P50, a Bloom short-circuit on a missing key about 10 µs, and a cache-miss read that touches the disk 200 to 500 µs. Measured compaction write amplification was about 3x for leveled and 1.5x for size-tiered over a sustained write run, the exact trade the strategy table promises.
+The fsync path hit its target almost exactly, near 20K ops/s, bounded by a 50 to 200 µs NVMe fsync issued once per write, so throughput is roughly `1 / fsync_latency` and there is nowhere to hide. The no-fsync path came in near 100K ops/s, about half the target, which is the more instructive result: the target assumed the write path was pure skip-list insert plus sequential append, and the measured number is what happens once real allocation, cache traffic, and the Go scheduler all get a vote. Reads behave as designed: a block-cache hit is about 50 µs at P50, a Bloom short-circuit on a missing key about 10 µs, and a cache-miss read that touches the disk is 200 to 500 µs. Measured compaction write amplification was about 3x for leveled and 1.5x for size-tiered over a sustained write run, the exact trade the strategy table promises.
 
 ## Wrapping the single-node engine in Raft
 

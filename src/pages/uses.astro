@@ -2,11 +2,57 @@
 import Base from '../layouts/Base.astro';
 
 const GROUPS = [
-  { label: 'Editor & terminal', items: ['Neovim / VS Code', 'Ghostty + tmux', 'zsh + starship', 'Claude Code'] },
-  { label: 'Languages', items: ['Go · systems & services', 'Python · AI/backend', 'TypeScript · web', 'a little Rust'] },
-  { label: 'Stack I reach for', items: ['FastAPI · Celery', 'PostgreSQL · Redis · Kafka', 'Next.js · Astro', 'Docker · Kubernetes'] },
-  { label: 'AI', items: ['LiteLLM gateway', 'MCP / FastMCP', 'PromptLine (evals)', 'OpenAI · Anthropic · open models'] },
-  { label: 'Machine', items: ['MacBook Pro (Apple silicon)', 'External monitor', 'Mechanical keyboard'] },
+  { label: 'Languages', items: [
+    'Go · services, storage, systems work',
+    'Python · AI and backend',
+    'TypeScript · web and SDKs',
+    'C++ · lower-level work',
+    'Rust · still learning it',
+  ] },
+  { label: 'Backend & data', items: [
+    'PostgreSQL · the default',
+    'Redis · cache, queues, rate limits',
+    'Kafka / NATS · streaming',
+    'FastAPI · Python services',
+    'gRPC + Protobuf · service contracts',
+    'SQLite · local state',
+  ] },
+  { label: 'Infra & deploy', items: [
+    'Docker',
+    'Kubernetes + Helm',
+    'Terraform',
+    'Cloudflare · the edge, and this site',
+    'GitHub Actions · CI',
+  ] },
+  { label: 'Observability', items: [
+    'Prometheus + Grafana',
+    'OpenTelemetry · traces',
+    'structured logs',
+  ] },
+  { label: 'AI & LLM', items: [
+    'MCP / FastMCP',
+    'OpenRouter · multi-provider',
+    'Anthropic · OpenAI · open models',
+    'PromptLine · my own evals',
+    'pgvector · embeddings',
+  ] },
+  { label: 'Editor & terminal', items: [
+    'Neovim / VS Code',
+    'Ghostty + tmux',
+    'zsh + starship',
+    'Claude Code',
+  ] },
+  { label: 'This site', items: [
+    'Astro + MDX',
+    'hand-written CSS, no Tailwind',
+    'Pagefind · search',
+    'Cloudflare · deploy',
+  ] },
+  { label: 'Machine', items: [
+    'MacBook Pro · Apple silicon',
+    'External monitor',
+    'Mechanical keyboard',
+  ] },
 ];
 ---
 
@@ -16,7 +62,7 @@ const GROUPS = [
       <p class="label hero__eyebrow rise rise-1">/uses</p>
       <h1 class="rise rise-2">What I use</h1>
       <p class="hero__lede rise rise-3" style="margin-top:1rem;">
-        The tools behind the work. Updated when it actually changes.
+        The tools behind the work. Updated when the setup actually changes.
       </p>
     </section>
 

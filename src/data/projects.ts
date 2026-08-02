@@ -18,8 +18,9 @@ export const THEMES: Theme[] = [
   'Infrastructure & networking',
   'Concurrency & OS',
   'AI & agents',
-  'Machine learning & numerics',
   'Applications',
+  // study/from-scratch repos, kept last
+  'Machine learning & numerics',
 ];
 
 export interface Project {
@@ -308,15 +309,6 @@ export const PROJECTS: Project[] = [
     href: 'https://github.com/sanskarpan/DB-Backup-Main',
     theme: 'Applications',
     badge: 'Systems',
-  },
-  {
-    name: 'CallLogCleaner',
-    blurb:
-      'A macOS app that decrypts encrypted iPhone backups (PBKDF2, AES-256-CBC, RFC 3394 key unwrap), edits the call-history SQLite store non-destructively with rollback, and visualizes call patterns. No jailbreak.',
-    stack: 'Swift · SwiftUI · CommonCrypto',
-    href: 'https://github.com/sanskarpan/CallLogCleaner',
-    theme: 'Applications',
-    badge: 'Swift',
   },
   {
     name: 'File-Share',

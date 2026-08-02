@@ -6,7 +6,6 @@ import { PROJECTS } from '../data/projects';
 // The main projects page: a tight, high-signal shortlist.
 // The full, theme-grouped catalogue lives at /projects/all.
 const shortlist = PROJECTS.filter((p) => p.flat);
-const total = PROJECTS.length;
 ---
 
 <Base title="Projects" description="Storage engines, distributed systems, agent tooling, and payment infra, mostly open source.">
@@ -26,7 +25,7 @@ const total = PROJECTS.length;
         {shortlist.map((p) => <ProjectCard project={p} />)}
       </div>
       <p style="margin-top:1.75rem; font-family: var(--font-mono); font-size:0.82rem;">
-        <a href="/projects/all" style="color:var(--accent);">Browse all {total} projects, grouped by theme →</a>
+        <a href="/projects/all" style="color:var(--accent);">Browse everything, grouped by theme →</a>
       </p>
     </section>
   </div>
