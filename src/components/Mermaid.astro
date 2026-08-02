@@ -75,6 +75,12 @@ const { chart, caption, label } = Astro.props;
   }
 
   render();
+  // The serif label font can load after the first measure, which sizes Mermaid's
+  // boxes to the fallback metrics and then clips the wider glyphs. Re-render once the
+  // webfonts are ready so boxes are measured against the real font.
+  if (document.fonts && document.fonts.ready) {
+    document.fonts.ready.then(() => render());
+  }
   // Re-render when the theme toggle flips (class change lands synchronously on click).
   const toggle = document.getElementById('theme-toggle');
   if (toggle) toggle.addEventListener('click', () => setTimeout(render, 20));
