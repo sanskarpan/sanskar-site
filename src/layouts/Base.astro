@@ -25,16 +25,20 @@ const { title, description, image, type } = Astro.props;
     </main>
     <Footer />
 
-    <!-- Every navigating link opens in a new tab; only in-page (#) anchors stay put. -->
+    <!-- External links open in a new tab; internal (same-site) navigation stays in place.
+         A [data-newtab] container can force a new tab for internal links inside it. -->
     <script is:inline>
       (function () {
+        var here = location.hostname;
         document.querySelectorAll('a[href]').forEach(function (a) {
           var href = a.getAttribute('href') || '';
-          if (!href || href.charAt(0) === '#') return;        // in-page anchors (TOC, headings)
-          if (/^(mailto:|tel:)/i.test(href)) return;          // let the OS handler take these
-          if (a.closest('[data-selftab]')) return;            // sections that navigate in place
-          a.target = '_blank';
-          a.rel = 'noopener noreferrer';
+          if (!href || href.charAt(0) === '#') return;            // in-page anchors (TOC, headings)
+          if (/^(mailto:|tel:)/i.test(href)) return;              // let the OS handler take these
+          var external = /^[a-z]+:\/\//i.test(href) && a.hostname !== here;
+          if (external || a.closest('[data-newtab]')) {
+            a.target = '_blank';
+            a.rel = 'noopener noreferrer';
+          }
         });
       })();
     </script>
