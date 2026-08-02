@@ -7,7 +7,6 @@ const grouped = THEMES.map((t) => ({
   theme: t,
   items: PROJECTS.filter((p) => p.theme === t),
 })).filter((g) => g.items.length > 0);
-const total = PROJECTS.length;
 ---
 
 <Base title="All projects" description="The full catalogue: storage engines, distributed systems, infrastructure, concurrency, ML, and applications, grouped by theme.">
@@ -18,8 +17,8 @@ const total = PROJECTS.length;
       </p>
       <h1 class="rise rise-2">All projects</h1>
       <p class="hero__lede rise rise-3" style="margin-top:1rem;">
-        Everything worth showing, {total} in all, grouped by theme. Most are open
-        source; a few ship a live demo or a docs site.
+        Everything worth showing, grouped by theme. Most are open source; a few
+        ship a live demo or a docs site.
       </p>
     </section>
 
