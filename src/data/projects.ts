@@ -43,6 +43,7 @@ export const PROJECTS: Project[] = [
       'A from-scratch LSM-tree in Go: skip-list memtable, Bloom-filtered mmap SSTables, three live-switchable compaction strategies, and Raft quorum replication with multi-shard rebalancing behind one API.',
     stack: 'Go · LSM · Bloom filters · mmap · Raft',
     href: 'https://github.com/sanskarpan/lsm-tree-storage',
+    docs: 'https://sanskarpan.github.io/lsm-tree-storage/',
     theme: 'Storage & databases',
     badge: 'Go',
     featured: true,
