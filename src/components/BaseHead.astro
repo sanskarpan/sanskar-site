@@ -41,6 +41,8 @@ const ogImage = image ? new URL(image, Astro.site ?? SITE.url).href : undefined;
 <meta property="og:site_name" content={SITE.name} />
 {ogImage && <meta property="og:image" content={ogImage} />}
 <meta name="twitter:card" content={ogImage ? 'summary_large_image' : 'summary'} />
+<meta name="twitter:site" content="@sanskarpan" />
+<meta name="twitter:creator" content="@sanskarpan" />
 <meta name="twitter:title" content={fullTitle} />
 <meta name="twitter:description" content={description} />
 {ogImage && <meta name="twitter:image" content={ogImage} />}
