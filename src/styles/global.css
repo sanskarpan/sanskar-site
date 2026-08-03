@@ -271,7 +271,7 @@ a.tag:hover { color: var(--ink); text-decoration: underline; text-underline-offs
 
 .ghc-cell { width: var(--ghc-c); height: var(--ghc-c); border-radius: 2px; }
 .ghc-cell[data-l="0"], .ghc-cell:not([data-l]) { background: var(--paper-2); }
-html.dark .ghc-cell[data-l="0"], html.dark .ghc-cell:not([data-l]) { background: #241f17; }
+html.dark .ghc-cell[data-l="0"], html.dark .ghc-cell:not([data-l]) { background: #2b2418; }
 .ghc-cell[data-l="1"] { background: rgba(168, 69, 31, 0.32); }
 .ghc-cell[data-l="2"] { background: rgba(168, 69, 31, 0.55); }
 .ghc-cell[data-l="3"] { background: rgba(168, 69, 31, 0.78); }
@@ -468,7 +468,7 @@ html.dark .astro-code span { color: var(--shiki-dark) !important; background: va
 /* fullscreen diagram overlay */
 .fig-modal {
   position: fixed; inset: 0; z-index: 200; display: flex; align-items: center; justify-content: center;
-  padding: 4vh 4vw; background: rgba(16, 13, 9, 0.86); animation: fig-fade 0.16s ease-out;
+  padding: 4vh 4vw; background: rgba(14, 11, 8, 0.94); backdrop-filter: blur(3px); animation: fig-fade 0.16s ease-out;
 }
 @keyframes fig-fade { from { opacity: 0; } to { opacity: 1; } }
 .fig-modal__panel {
@@ -486,6 +486,21 @@ html.dark .astro-code span { color: var(--shiki-dark) !important; background: va
   padding: 0.35rem 0.7rem; cursor: pointer; transition: border-color 0.18s, background 0.18s;
 }
 .fig-modal__close:hover { border-color: #f4efe3; background: rgba(244, 239, 227, 0.1); }
+
+/* Touch devices: grow the small secondary controls to a comfortable ~40px hit area.
+   Visual size is barely changed; the extra reach comes from vertical padding. */
+@media (pointer: coarse) {
+  .tag { display: inline-block; padding-block: 0.45rem; }
+  .card__demo, .card__docs { padding-block: 0.52rem; }
+  .topic { padding-block: 0.52rem; }
+  .colophon__socials a { display: inline-block; padding-block: 0.5rem; }
+  .fig-expand, .code-copy { padding-block: 0.58rem; }
+  .fig-modal__close { padding-block: 0.6rem; }
+  .toc__link { padding-block: 0.25rem; }
+}
+
+/* Wrapped code should break between tokens, never mid-identifier. */
+.prose pre code, .prose pre > code { overflow-wrap: normal; word-break: normal; }
 
 /* hover-reveal anchor link on headings (injected by Article script) */
 .prose h2, .prose h3 { position: relative; }
@@ -593,6 +608,14 @@ html.dark .astro-code span { color: var(--shiki-dark) !important; background: va
   /* keep diagrams legible: scroll instead of shrinking text to nothing */
   .figure__frame { overflow-x: auto; -webkit-overflow-scrolling: touch; }
   .dgm { min-width: 460px; }
+  /* Mermaid SVGs otherwise scale down to a few illegible pixels; give them a floor
+     and let the frame scroll, the same way the hand-drawn .dgm SVGs behave. */
+  .figure pre.mermaid svg { min-width: 460px; max-width: none; width: auto; margin: 0; }
+  /* the expand modal should genuinely enlarge the diagram: render it wider than the
+     screen and let the panel pan, instead of matching the inline size */
+  .fig-modal { padding: 3vh 2vw; }
+  .fig-modal__panel { width: 96vw; padding: 1rem; }
+  .fig-modal__panel svg { width: auto; min-width: 600px; }
   .prose table { font-size: 0.82em; }
   .prose pre { font-size: 0.78rem; }
   .uses-row { grid-template-columns: 1fr; gap: 0.25rem; }
