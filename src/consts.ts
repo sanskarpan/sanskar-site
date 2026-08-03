@@ -24,6 +24,7 @@ export const NAV = [
 export const SOCIALS = [
   { label: 'GitHub', href: 'https://github.com/sanskarpan' },
   { label: 'LinkedIn', href: 'https://linkedin.com/in/sanskarpandey2004' },
+  { label: 'Twitter', href: 'https://x.com/sanskarpan' },
   { label: 'Email', href: 'mailto:sanskar.works.2004@gmail.com' },
   { label: 'RSS', href: '/rss.xml' },
 ];
