@@ -1,0 +1,160 @@
+---
+title: Writing a container runtime in Rust
+description: "A from-scratch OCI container runtime: the three-stage namespace dance, OverlayFS without shelling out, cgroups v2 accounting, a security pipeline where order is everything, and why the daemon never links the runtime. Measured, with the mismatches left in."
+date: 2026-09-07
+tags: ['rust', 'containers', 'systems']
+draft: true
+---
+
+import Figure from '../../components/diagrams/Figure.astro';
+import KestrelDance from '../../components/diagrams/KestrelDance.astro';
+import KestrelOverlay from '../../components/diagrams/KestrelOverlay.astro';
+import Mermaid from '../../components/Mermaid.astro';
+import Bars from '../../components/Bars.astro';
+
+Every `docker run` hides about a dozen kernel mechanisms behind one command. `runc` is excellent at hiding them, which is exactly the problem if you want to understand them: reading about user namespaces and *writing the id-map handshake* are different orders of understanding. I built a container runtime from scratch in Rust — namespaces, cgroups v2, OverlayFS, seccomp, an image store with a real registry client, a daemon with a REST API, and a CLI, TUI, and web dashboard on top. Thirteen crates, 328 tasks on the phase headers, every privileged behavior covered by tests that run against a real kernel. What follows is execution order: unshare, map, mount, confine, exec.
+
+## A container is not a thing
+
+There is no container object in the kernel. A container is what you get when you combine four mechanisms and agree not to look behind the curtain: namespaces (what a process can *see*), cgroups (what it may *use*), a root filesystem (what it thinks the world *is*), and a security pipeline (what it is *allowed to do*). The runtime's whole job is to set up those four in the right order and then get out of the way by becoming PID 1 and exec'ing your entrypoint.
+
+<Mermaid label="Fig 1" caption="The full stack. Three clients talk to one daemon; the daemon never links the runtime, it fork+execs it, and the runtime's only job after setup is to become PID 1 and disappear into your process." chart={`
+flowchart TB
+  CLI["kestrel CLI<br/>clap + websocket"] --> D
+  TUI["kestrel-tui<br/>ratatui + SSE"] --> D
+  WEB["web dashboard<br/>React + D3 + xterm"] --> D
+  D["kestreld<br/>tokio + axum<br/>:7777 + unix socket"] -->|fork + exec<br/>never linked| R["kestrel-runtime<br/>single-threaded<br/>no tokio in normal deps"]
+  R -->|clone3 / unshare| I["kestrel-init · PID 1<br/>static binary"]
+  I -->|mounts, pivot, caps,<br/>seccomp, execve| E["your entrypoint"]
+`} />
+
+The layering is structural, not aesthetic. The runtime is single-threaded and `tokio`-free in its normal dependencies by enforcement (a script fails the build if `tokio` appears in its non-dev tree), because `fork` and `unshare` in a multithreaded process are how you get silent corruption. The daemon is allowed its async runtime precisely because it never links the runtime — it spawns it as a child process. That split is the direct answer to Go's `nsexec` problem: `runc` needs a thousand lines of C that run before the Go runtime boots, because Go spawns threads before `main`. Rust has no runtime threads, so `unshare(CLONE_NEWUSER)` works directly, and every raw syscall is one auditable `unsafe` block with a `SAFETY` comment. `youki` proved the path viable; I walked it to a measured, unoptimized end.
+
+## The namespace dance has three stages because the kernel insists
+
+Eight namespace types, and the fundamental annoyance is that `unshare(CLONE_NEWPID)` does not move the caller. It only arranges that the caller's *future children* are born into the new PID namespace. So there is no two-step way to become PID 1 of a fresh namespace. You unshare, then you fork, and the child is PID 1. That fork is not optional, and everything about the dance follows from it.
+
+<Figure label="Fig 2" caption="The three-stage dance. Stage1 unshares everything except PID and requests the id maps, stage0 writes them, then stage1 unshares PID and forks the process that becomes PID 1.">
+  <KestrelDance />
+</Figure>
+
+Two details matter here, and both are the kind you only learn by watching them fail.
+
+**Id maps are one write, setgroups first.** A user namespace's `uid_map` and `gid_map` each accept exactly one `write()` for the lifetime of the namespace, so every mapping line is assembled and written in a single call. And `gid_map` must not be written until `/proc/[pid]/setgroups` says `deny` (CVE-2014-8989): without that ordering, mapping a group you belong to and then dropping it with `setgroups()` escapes a negative ACL. The code enforces the order structurally, not by convention.
+
+**Joining is the reverse lesson: user namespace last.** Entering a user namespace drops the capabilities you need to enter the rest, so joining user-first makes every subsequent `setns()` fail with `EPERM`. The join order is a constant, tested both directions: user-first fails, user-last succeeds.
+
+The stages coordinate over a socketpair with a five-variant protocol, and every read has a timeout — ten seconds, thirty for the final pid report:
+
+```rust
+pub enum Sync {
+    RequestMaps,
+    MapsDone,
+    ReportPid(i32),
+    Ready,
+    Error(String),
+}
+
+pub fn recv_sync_timeout(sock: &UnixDatagram, timeout: Duration) -> Result<Sync> {
+    sock.set_read_timeout(Some(timeout))
+        .context("setting sync read timeout")?;
+    // ... fixed 4096-byte receive buffer; every variant fits ...
+}
+```
+
+That `Error(String)` variant prevents a ten-second silent hang: without it a wedged stage fails as a timeout with no message, and with it the parent surfaces the actual failure. A wedged stage must fail, not block forever. That rule holds everywhere two processes shake hands in this codebase.
+
+## Overlay resolves top-down
+
+Container images are stacks of tarballs, and the kernel's OverlayFS composites them at mount time: a stack of read-only lower layers, one writeable upper layer, one merged view. The mount call fails on two details:
+
+**Lowerdir is reversed: the rightmost entry is the bottom.** Get it backwards and every file resolves to the oldest version. And the mount option string has a 4096-byte page limit, so layers are never referenced by their full chain IDs directly — each layer gets a `l/<12-hex-char>` symlink and the option string uses the short names. The symlink farm exists for one reason: long chains must fit in one page.
+
+<Figure label="Fig 3" caption="The overlay stack. Writes land in upperdir, reads fall through to the topmost lower with the file, and deletions never touch a lower layer.">
+  <KestrelOverlay />
+</Figure>
+
+Deletion never touches the lower layers: deleting a file writes a **whiteout** — a char device `0:0` in upperdir that hides the lower entry — and deleting a directory sets an **opaque xattr** that hides everything beneath it. The lower layers are content-addressed and shared between containers, so they are never modified, only hidden from. Copy-up accounting falls out of the same walk: anything present in both upper and a lower is a copy-up, and the daemon's scanner attributes each one to its origin layer every 5 seconds.
+
+Then comes `pivot_root`, six numbered steps plus a final `chdir`, all load-bearing. The abridged shape:
+
+```rust
+// (1) Detach from host mount propagation...
+mount(None::<&str>, "/", None::<&str>,
+    MsFlags::MS_REC | MsFlags::MS_PRIVATE, None::<&str>)?;
+// (2) ...pivot_root requires new_root to BE a mount point...
+mount(Some(new_root), new_root, None::<&str>,
+    MsFlags::MS_BIND | MsFlags::MS_REC, None::<&str>)?;
+// (3) chdir(new_root) — the "." form resolves against CWD...
+// (4) Swap. Old root is now stacked over ".".
+nix::unistd::pivot_root(".", ".")?;
+// (5) mark old root MS_SLAVE ... (6) umount2 MNT_DETACH ... chdir("/").
+// (error context omitted — each call names its syscall and likely fix)
+```
+
+I skipped step one once and wedged the host; I develop exclusively in a disposable VM since then. Systemd marks `/` shared, and without the private remount your mounts leak into the host namespace — or worse, the detach unmounts the *host* root.
+
+## cgroups v2: the accounting is the feature
+
+Limits are strings. cgroups v2 writes limits as text — `cpu.max` is `"<quota> <period>"` or `"max <period>"`, so `--cpus 1.5` becomes `150000 100000` — and the manager refuses to run on v1, enables controllers walking root-to-parent (never in the leaf itself: the no-internal-process rule means containers always get leaf cgroups), and then mostly reads.
+
+> Exit code 137 is hearsay. The `oom_kill` counter in `memory.events` is the authoritative OOM signal, and the daemon watches it rather than inferring death from a number.
+
+That OOM-counter-vs-exit-code distinction drives the metrics design: a 1 Hz sampler reads `cpu.stat`, `memory.current`, `io.stat`, and `pids.current` for every running container, and an OOM watcher polls `memory.events` and emits an event on increment. Pressure stall information (`cpu.pressure`, `memory.pressure`, `io.pressure`, each with `some` and usually `full` lines) turns "the container is slow" into a quantified stall percentage, which is what the dashboard charts. The OCI `shares` knob survives via the same v1→v2 conversion runc uses — change the clamp bounds and migrated configs silently get different weights:
+
+```rust
+pub(crate) fn shares_to_weight(shares: u64) -> u64 {
+    if shares == 0 {
+        return 100;
+    }
+    let s = shares.clamp(2, 262_144);
+    1 + ((s - 2) * 9999) / 262_142
+}
+```
+
+## Security is an ordering problem
+
+Capabilities, `no_new_privs`, seccomp, rlimits, `oom_score_adj`, `PR_SET_PDEATHSIG` — none of them is individually hard. What is hard is that they compose only in one order: clear ambient caps, drop the bounding set (irreversible — nothing may be applied before it), set effective, permitted, inheritable, raise ambient, then `prctl(PR_SET_NO_NEW_PRIVS)` when the spec asks for it, then load the seccomp filter **immediately before** `execve`. Reorder any two and you get a container that is either broken or silently unprotected, and the two failure modes look identical from outside.
+
+<Mermaid label="Fig 4" caption="The security pipeline. Each step constrains the next; unknown syscalls are skipped with a warning rather than failing the container, and violations stream back to the daemon over the notify fd." chart={`
+flowchart LR
+  C["capabilities<br/>ambient clear, bounding drop, 5 sets"] --> N["no_new_privs<br/>when the spec asks, before seccomp"]
+  N --> S["seccomp filter<br/>1 rule, 50 syscall names"]
+  S --> E["execve<br/>immediately after"]
+  S -.->|unknown name| W["skip + warn<br/>never fail"]
+  S -.->|SCMP_ACT_NOTIFY| V["violation → daemon<br/>seccomp.violation event"]
+`} />
+
+The shipped default profile is a single rule covering fifty syscall names, Docker-equivalent in spirit. Unknown names are skipped with a warning, never fatal — a filter that refuses to load on a newer kernel is worse than a filter missing one name. And `SCMP_ACT_NOTIFY` turns violations into events: the kernel suspends the offending thread, the daemon reads `{pid, syscall, args}`, answers `ENOSYS`, and the Security view lights up live while an attach session is open.
+
+## The line between the daemon and the runtime never blurs
+
+`kestrel-runtime` asserts single-threadedness at startup and fails loudly otherwise, because every `fork` in the namespace dance and every `clone3(..., CLONE_INTO_CGROUP)` assumes one thread. `kestreld` is `tokio` + `axum` with a 1 Hz metrics sampler, an SSE event bus, and a WebSocket attach bridge. It touches the runtime only through `fork` + `exec`, the same way your shell touches `ls`. The interface between them is a sync socket and `state.json`, never a function call.
+
+The surfaces above the daemon are three views of the same REST + SSE API: a `clap` CLI with websocket `exec -it` and `attach`, a `ratatui` TUI with namespace, layer, and log tabs, and a React dashboard with a D3 namespace graph, layer inspector, and pressure charts. The CLI caught a real bug I fixed: `ps` printed 12-character ids, but the daemon 404'd on anything but the full id. The fix was Docker-style unique-prefix resolution at the single registry lookup every handler shares — exact match wins, unique prefix resolves, ambiguous prefixes get a message saying so.
+
+## The numbers are ceilings, not promises
+
+I took benchmarks in the Lima VM against debug builds, timing daemon HTTP calls with poll-every-100ms quantization, so treat the absolutes as ceilings — measure on your hardware.
+
+<Bars label="Fig 5" caption="Container lifecycle latencies, debug builds, Lima VM. The first create pays snapshot setup; exec/stop/delete are sub-second. Warm create→running is dominated by debug-binary spawns, not kernel work." bars={[
+  { label: "create→running #1", value: 15.9, display: "~15.9s" },
+  { label: "create→running #2", value: 14.5, display: "~14.5s", accent: true },
+  { label: "create→running #3", value: 14.0, display: "~14.0s" },
+  { label: "pull alpine (cold)", value: 5.5, display: "~5.5s" },
+  { label: "exec echo", value: 0.11, display: "~111ms" },
+  { label: "stop", value: 0.23, display: "~229ms" },
+  { label: "delete", value: 0.03, display: "~31ms" },
+]} max={16} />
+
+The warm-up drift across the three creates is the snapshot and network attach caching, not noise. The 14-second floor is what happens once half a dozen debug binaries spawn in sequence — the kernel work underneath (unshare, overlay mount, pivot) is milliseconds. Footprints tell the same story at small scale: the daemon holds ~23 MB, each shim ~2.5 MB, and a sleeping alpine sits at ~5 MB in `memory.current`. Nothing here is optimized; everything here is accounted for.
+
+![Kestrel demo: ps, exec, explain](/kestrel-demo.gif)
+
+The GIF shows the lifecycle: list, exec into the container, read its hostname from its own UTS namespace, replay the creation trace.
+
+## It is not production
+
+There is no CRIU checkpoint/restore, no Wasm entrypoint, no containerd shim — those live in the stretch notes as scoped-out designs, not silent gaps. The threat model documents its known holes rather than implying completeness. And it develops exclusively in a disposable VM, because a bad `pivot_root` does not care how careful your code review was.
+
+The [code is on GitHub](https://github.com/sanskarpan/kestrel), with the [full docs site](https://sanskarpan.github.io/kestrel/): the kernel-by-kernel spec, per-phase design docs, the user guide, and the measured benchmarks this piece summarizes.

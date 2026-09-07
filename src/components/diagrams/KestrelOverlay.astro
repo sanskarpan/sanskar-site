@@ -1,0 +1,37 @@
+---
+// OverlayFS stack: lower layers bottom-to-top (reversed in the mount
+// options), writeable upperdir, merged view; copy-up, whiteout, opaque.
+---
+<svg class="dgm" viewBox="0 0 700 270" role="img" aria-label="OverlayFS stack: base and mid layers below, writeable upperdir on top, merged view on the right; a modified file copies up, a deleted file becomes a whiteout, a deleted directory becomes opaque.">
+  <defs>
+    <marker id="ko-ah" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" class="dgm-arrow" />
+    </marker>
+  </defs>
+
+  <!-- layer stack -->
+  <rect x="14" y="150" width="220" height="40" rx="8" class="dgm-box" />
+  <text x="124" y="175" text-anchor="middle" class="dgm-label">layer 0 · base</text>
+  <rect x="14" y="108" width="220" height="40" rx="8" class="dgm-box" />
+  <text x="124" y="133" text-anchor="middle" class="dgm-label">layer 1</text>
+  <rect x="14" y="66" width="220" height="40" rx="8" class="dgm-box dgm-box--accent" />
+  <text x="124" y="91" text-anchor="middle" class="dgm-label">upperdir · writeable</text>
+
+  <!-- merged -->
+  <line x1="234" y1="110" x2="330" y2="110" class="dgm-line" marker-end="url(#ko-ah)" />
+  <text x="282" y="100" text-anchor="middle" class="dgm-sub">merge</text>
+  <rect x="332" y="66" width="180" height="124" rx="8" class="dgm-box" />
+  <text x="422" y="94" text-anchor="middle" class="dgm-title">merged view</text>
+  <text x="422" y="112" text-anchor="middle" class="dgm-sub">what the container sees</text>
+  <text x="422" y="130" text-anchor="middle" class="dgm-sub">app.conf (copied up)</text>
+  <text x="422" y="148" text-anchor="middle" class="dgm-sub">old.log hidden (whiteout)</text>
+  <text x="422" y="166" text-anchor="middle" class="dgm-sub">cache/ hidden (opaque)</text>
+
+  <!-- copy-up arrow -->
+  <line x1="120" y1="150" x2="120" y2="108" class="dgm-line dgm-line--accent" marker-end="url(#ko-ah)" />
+
+  <!-- annotations -->
+  <text x="20" y="216" class="dgm-sub">lowerdir is reversed: the rightmost entry is the bottom. upperdir wins every read.</text>
+  <text x="20" y="236" class="dgm-sub">layers referenced as l/&lt;6-char&gt; symlinks — full digests would blow the 4096-byte option limit.</text>
+  <text x="20" y="256" class="dgm-sub">delete a file → char device 0:0 (whiteout); delete a dir → opaque xattr; lowers are never touched.</text>
+</svg>
