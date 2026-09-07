@@ -1,0 +1,44 @@
+---
+// The three-stage namespace dance: stage0 forks stage1 (all namespaces
+// except PID), stage1 unshares + writes id maps, then unshares PID and
+// forks stage2, which is PID 1 of the new namespace and execs.
+---
+<svg class="dgm" viewBox="0 0 700 280" role="img" aria-label="Three-stage namespace dance: stage0 forks stage1, stage1 unshares namespaces and writes id maps, then forks stage2 which becomes PID 1 and execs the entrypoint.">
+  <defs>
+    <marker id="kd-ah" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" class="dgm-arrow" />
+    </marker>
+  </defs>
+
+  <!-- stage0 -->
+  <rect x="14" y="60" width="150" height="64" rx="8" class="dgm-box" />
+  <text x="89" y="88" text-anchor="middle" class="dgm-title">stage0</text>
+  <text x="89" y="106" text-anchor="middle" class="dgm-sub">host namespaces</text>
+
+  <!-- fork 1 -->
+  <line x1="164" y1="92" x2="224" y2="92" class="dgm-line" marker-end="url(#kd-ah)" />
+  <text x="194" y="82" text-anchor="middle" class="dgm-sub">fork</text>
+
+  <!-- stage1 -->
+  <rect x="226" y="30" width="220" height="124" rx="8" class="dgm-box dgm-box--accent" />
+  <text x="336" y="58" text-anchor="middle" class="dgm-title">stage1</text>
+  <text x="336" y="78" text-anchor="middle" class="dgm-sub">unshare(user) · request maps</text>
+  <text x="336" y="96" text-anchor="middle" class="dgm-sub">unshare(rest) · unshare(NEWPID)</text>
+  <text x="336" y="114" text-anchor="middle" class="dgm-sub">still the old PID</text>
+  <text x="336" y="132" text-anchor="middle" class="dgm-sub">report grandchild, _exit(0)</text>
+
+  <!-- fork 2 -->
+  <line x1="446" y1="92" x2="506" y2="92" class="dgm-line dgm-line--accent" marker-end="url(#kd-ah)" />
+  <text x="476" y="82" text-anchor="middle" class="dgm-sub dgm-sub--accent">fork</text>
+
+  <!-- stage2 -->
+  <rect x="508" y="60" width="178" height="64" rx="8" class="dgm-box" />
+  <text x="597" y="88" text-anchor="middle" class="dgm-title">stage2 = PID 1</text>
+  <text x="597" y="106" text-anchor="middle" class="dgm-sub">exec entrypoint</text>
+
+  <!-- annotations -->
+  <text x="20" y="180" class="dgm-sub">unshare(NEWPID) never moves the caller — only the next fork is born inside.</text>
+  <text x="20" y="200" class="dgm-sub">id maps: setgroups=deny first (CVE-2014-8989), all lines in a single write.</text>
+  <text x="20" y="220" class="dgm-sub">every stage reports over a sync socket; every read has a timeout — a wedged stage fails, never hangs.</text>
+  <text x="20" y="250" class="dgm-sub">join order is the reverse lesson: user namespace LAST, or setns drops the caps the rest need.</text>
+</svg>
