@@ -1,0 +1,50 @@
+---
+---
+<svg class="dgm" viewBox="0 0 700 300" role="img" aria-label="The stale-endpoint window: an instance crashes at t0, detection takes ~2s via gossip or ~15s via health checks, propagation takes 1-3s via gossip deltas, notification takes ~10ms via streaming or up to TTL via DNS, and the client applies the update immediately or when pooled connections retire.">
+  <defs>
+    <marker id="bt-ah" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" class="dgm-arrow" />
+    </marker>
+  </defs>
+
+  <!-- time axis -->
+  <line x1="90" y1="40" x2="670" y2="40" class="dgm-line" marker-end="url(#bt-ah)" />
+  <text x="664" y="28" text-anchor="end" class="dgm-sub">time →</text>
+
+  <!-- t0 -->
+  <line x1="110" y1="40" x2="110" y2="200" class="dgm-line dgm-line--accent" />
+  <text x="110" y="60" text-anchor="middle" class="dgm-title">t0</text>
+  <text x="110" y="78" text-anchor="middle" class="dgm-sub">instance</text>
+  <text x="110" y="92" text-anchor="middle" class="dgm-sub">crashes</text>
+
+  <!-- t1 fast -->
+  <line x1="250" y1="40" x2="250" y2="200" class="dgm-line" />
+  <text x="250" y="60" text-anchor="middle" class="dgm-title">t1 · gossip</text>
+  <text x="250" y="78" text-anchor="middle" class="dgm-sub">~2 SWIM periods</text>
+  <text x="250" y="92" text-anchor="middle" class="dgm-sub">≈ 2s</text>
+
+  <!-- t1 slow -->
+  <line x1="430" y1="40" x2="430" y2="200" class="dgm-line" />
+  <text x="430" y="60" text-anchor="middle" class="dgm-title">t1 · health</text>
+  <text x="430" y="78" text-anchor="middle" class="dgm-sub">interval × failures</text>
+  <text x="430" y="92" text-anchor="middle" class="dgm-sub">5s × 3 = 15s</text>
+
+  <!-- t2-t4 -->
+  <line x1="560" y1="40" x2="560" y2="200" class="dgm-line" />
+  <text x="560" y="60" text-anchor="middle" class="dgm-title">t2 → t4</text>
+  <text x="560" y="78" text-anchor="middle" class="dgm-sub">propagate · notify</text>
+  <text x="560" y="92" text-anchor="middle" class="dgm-sub">client applies</text>
+
+  <!-- fast path bar -->
+  <rect x="110" y="120" width="450" height="30" rx="6" class="dgm-box dgm-box--accent" />
+  <text x="122" y="140" class="dgm-label">fast: gossip detect + streaming notify ≈ 2s</text>
+
+  <!-- slow path bar -->
+  <rect x="110" y="158" width="540" height="30" rx="6" class="dgm-box dgm-box--dashed" />
+  <text x="122" y="178" class="dgm-label">slow: health detect + DNS notify ≈ 45s</text>
+
+  <!-- annotations -->
+  <text x="20" y="226" class="dgm-sub">detection dominates the window: ~2s vs ~15s is decided before a single byte propagates.</text>
+  <text x="20" y="246" class="dgm-sub">notification decides the rest: streaming ≈ 10ms, blocking waits out the timeout, DNS waits out the TTL.</text>
+  <text x="20" y="266" class="dgm-sub">stages measured separately by MeasurePropagation: detect · propagate · notify · apply.</text>
+</svg>
