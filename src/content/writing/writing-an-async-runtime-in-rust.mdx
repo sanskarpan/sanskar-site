@@ -1,0 +1,306 @@
+---
+title: Writing an async runtime in Rust
+description: "A from-scratch async runtime: one allocation per task with a packed AtomicUsize state, a hand-rolled Waker vtable, a Chase-Lev work-stealer with an intrusive injector, epoll/kqueue/IOCP readiness, a 6-level timer wheel, a Linux io_uring completion backend with safe multishot, and the TUI and web consoles that make it visible. Measured, model-checked, and honest about the gaps."
+date: 2026-09-13
+tags: ['rust', 'async', 'systems', 'concurrency']
+draft: false
+---
+
+import Figure from '../../components/diagrams/Figure.astro';
+import Mermaid from '../../components/Mermaid.astro';
+import Bars from '../../components/Bars.astro';
+
+Every `async fn` in Rust hides a contract. The compiler will turn your function into a state machine, it will give you `Future`, `Poll`, `Context`, `Waker`, even the raw `RawWakerVTable` type — and then it stops. There is no executor in `std`. `block_on` does not exist, `spawn` does not exist, `sleep` does not exist. Tokio, async-std, smol all fill that gap, which is exactly why building one yourself is the most direct way to learn what you actually pay for when you write `await`. I built `eddy` from scratch in Rust to walk every layer: one allocation per task with a packed atomic state, a hand-rolled waker whose `+1/-1` contract is the hardest `unsafe` in the project, a current-thread spine that proves the task machinery in isolation, a Chase-Lev work-stealer with a random-victim, half-steal discipline, readiness drivers for epoll, kqueue, and IOCP, a hierarchical timer wheel, owned-buffer `io_uring` with safe multishot, and the instrumentation and consoles that make the whole thing visible. Thirteen thousand lines, 405 checklist boxes across 19 phases, every lock-free structure paired with a loom test in the same commit, and a set of live dashboards where starvation is literally a color. The [code is on GitHub](https://github.com/sanskarpan/eddy-runtime) and the [docs site is live](https://sanskarpan.github.io/eddy-runtime/).
+
+![eddy console: tasks, workers, and wake causality at a glance](/eddy-runtime/demo.gif)
+*The eddy-console TUI over a synthetic 889-frame event stream — task list, worker heatmap, and resource views cycling with pause and help overlays. Recorded at 1280×800 with a real pty, 12fps, Catppuccin Mocha.*
+
+## What it is — and what you get to try
+
+`eddy` is a library you can depend on. The workspace is `sanskarpan/eddy-runtime` with four crates — `eddy` (the runtime), `eddy-macros` (`#[eddy::main]`, `#[eddy::test]`, `select!`, `join!`, `try_join!`), `eddy-console` (a ratatui TUI over a Unix-socket event stream), and `eddy-console-web` with a Vite + React dashboard (`console-ui/`). The book lives at [sanskarpan.github.io/eddy-runtime](https://sanskarpan.github.io/eddy-runtime/) (mdBook, rebuilt on every push to `main`), and every phase header maps to a box in [`CHECKLIST.md`](https://github.com/sanskarpan/eddy-runtime/blob/main/CHECKLIST.md). It is currently `0.1.0` on `main`, wired as a path dependency while the `crates.io` publish is staged — you can try the whole thesis in one clone:
+
+```text
+git clone https://github.com/sanskarpan/eddy-runtime
+cargo test -p eddy --all-targets
+cargo clippy -p eddy --all-targets -- -D warnings
+cargo fmt --all -- --check
+RUSTFLAGS='--cfg loom' cargo test -p eddy --lib
+cargo bench -p eddy --bench vs_tokio -- --quick
+```
+
+The runtime ships three binaries and two consoles that double as its own observability. `eddy-console` connects to the runtime's Unix socket (`/tmp/eddy-instrumentation.sock` by default) and renders the task list with `Total / Busy / Idle / Sched / Polls` plus per-task poll histograms and warning lamps; `space` pauses the feed, `?` shows help, `/` filters. `eddy-console-web` bridges that same stream to a WebSocket for the browser. A deterministic recorder lives under `docs/assets/`: `python3 docs/assets/generate_demo.py` writes a length-prefixed `demo.bin` (889 frames today), `cargo run -p eddy-console -- --replay docs/assets/demo.bin` replays it, and `python3 docs/assets/render_gifs.py` re-renders both GIFs through a real pty with `pyte` + `Pillow` + `ffmpeg` palettegen at 1280×800. The README's two GIFs are pixel-identical replays, not screen captures with fake data.
+
+![drill-down, filter, and sort inside the TUI](/eddy-runtime/tui.gif)
+*Drill into a task's poll histogram, filter by `echo`, and sort by busy time — the same 889-frame replay, second reel.*
+
+## The missing piece `std` leaves on the table
+
+A future is just a value that knows how to `poll` itself:
+
+```rust
+enum Poll<T> { Ready(T), Pending }
+trait Future {
+    type Output;
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output>;
+}
+```
+
+`Pin` exists so that a value that needs to stay put on the heap can promise it. `Context` carries a `Waker`, and a `Waker` is a type-erased clone of whatever knows how to put the future back on a queue when it becomes ready again. That is the whole abstraction `std` ships. What it does not ship is the queue, the thread that services it, the I/O driver that knows when a socket is readable, the timer that knows when a `sleep` should fire, or the `spawn` that puts a future onto all of that in the first place. `eddy` is those missing pieces, and the reason to write them once is that every surprise in async Rust — why a `read_exact` is not cancel-safe, why a channel `recv` in a tight loop can starve a worker, why dropping a buffer while the kernel still has it is a use-after-free the borrow checker cannot see — lives in the gap between that `poll` signature and the code that calls it.
+
+<Mermaid label="Fig 1" caption="The cycle. An event wakes a task, the queue orders it, a worker polls it, the poll either completes or re-arms an I/O or timer wait — which will become the next wake." chart={`
+flowchart LR
+  E["event<br/>I/O ready / timer / channel / wake"] --> Q["queue<br/>run queue + LIFO slot + injector"]
+  Q --> P["poll<br/>Harness::poll"]
+  P -->|Pending| W["re-arm<br/>readiness / wheel / semaphore wait"]
+  W -.->|future wake| E
+  P -->|Ready| D["JoinHandle ready<br/>output or JoinError"]
+`} />
+
+## One allocation per task — and a state word that carries everything
+
+The unit of scheduling is `Cell<F, S>`: a single `#[repr(C)]` allocation holding a `Header`, a `Core<F, S>`, and a `Trailer`. The point is allocation discipline: one `alloc` per `spawn`, one `dealloc` at the end, verified by a counter test that asserts it. `Core` holds `Stage<F>` (`Running(F)`, `Finished(Output)`, `Consumed`) inside an `UnsafeCell`, and `Trailer` holds the `JoinHandle`'s waker. Everything interesting lives in `Header`:
+
+```rust
+struct Header {
+    state: AtomicUsize,              // [refcount:48][flags:16]
+    vtable: &'static Vtable,
+    owner_id: u32,
+    queue_next: UnsafeCell<Option<NonNull<Header>>>,
+}
+```
+
+`state` packs a 48-bit refcount and 16 flag bits into one `AtomicUsize`: `RUNNING`, `COMPLETE`, `NOTIFIED`, `CANCELLED`, `JOIN_INTEREST`, `JOIN_WAKER_SET`. Every transition is a single `fetch_update` CAS with the invariant documented beside it, and an overflow check aborts rather than wraps. `queue_next` is the intrusive link — the global injector is not a `Vec<Task>`, it is a list threaded *through* the tasks themselves, allocating nothing per push, in both the current-thread scheduler's injection list and the multi-thread scheduler's shared injector.
+
+Around that word, a `Vtable` (`poll`, `schedule`, `dealloc`, `try_read_output`, `drop_join_handle_slow`, `shutdown`) per `(Future, Scheduler)` pair makes `RawTask(NonNull<Header>)` a one-word, type-erased handle. `Harness::poll` is the driver: `transition_to_running` → build a `Waker` → `catch_unwind` the `poll` → `transition_to_idle` or `transition_to_complete`. Panics become `JoinError::Panic` without poisoning the runtime, `abort()` sets `CANCELLED` and a not-yet-running task is dropped without ever being polled, and dropping a `JoinHandle` detaches the task rather than cancelling it.
+
+<Mermaid label="Fig 2" caption="Packed state. The task is either idle in a queue, running on a worker, or complete, and the NOTIFIED bit remembers a wake that arrived mid-poll." chart={`
+stateDiagram-v2
+  [*] --> Idle
+  Idle --> Running: transition_to_running
+  Running --> Idle: transition_to_idle (NOTIFIED clear)
+  Running --> Running: NOTIFIED set → re-queue after poll
+  Running --> Complete: transition_to_complete
+  Complete --> [*]
+  Idle --> Idle: transition_to_notified sets NOTIFIED
+  Running --> Running: wake sets NOTIFIED, no second schedule
+`} />
+
+## The hardest unsafe is four functions long
+
+If the state word is the spine, the `Waker` is the ligament, and it is also the most `unsafe` in the project. A `Waker` is a `RawWaker` — a data pointer plus a `RawWakerVTable` of four function pointers — and the contract on those four is a refcounting dance where getting `wake` vs `wake_by_ref` backwards either leaks every task or frees a queued one:
+
+- `clone_waker`: `ref_inc()`, return a new `RawWaker` with the same data pointer — **+1**.
+- `wake_waker`: **consumes** the reference — schedule, and the schedule takes ownership.
+- `wake_by_ref_waker`: **does not consume** — schedule with an explicit `ref_inc()` for the queued reference.
+- `drop_waker`: `ref_dec()`, dealloc if zero — **−1**.
+
+Every function documents its `+1/-1` in a comment, `will_wake` is implemented as same-pointer + same-vtable so combinators skip redundant clones, and a `WakerRef<'a>` borrows a waker for the common poll path to avoid a clone per poll. The test that matters is the lost-wakeup case: `wake()` during `poll` must not vanish, and `wake()` twice before `poll` must schedule once (`NOTIFIED` is idempotent). Both have loom variants — wake-during-poll from another thread and concurrent clone+drop — that assert the task ends up completed or queued, never lost, never double-queued, and that the final `dealloc` happens exactly once.
+
+```rust
+// The shape — documented with +1/-1 on every branch:
+unsafe fn clone_waker(data: *const ()) -> RawWaker { /* ref_inc +1 */ }
+unsafe fn wake_waker(data: *const ()) { /* consumes; schedule takes ownership */ }
+unsafe fn wake_by_ref_waker(data: *const ()) { /* ref_inc +1; schedule */ }
+unsafe fn drop_waker(data: *const ()) { /* ref_dec; dealloc if zero => -1 */ }
+```
+
+## Current-thread first — so the machinery stands alone
+
+Before the multi-thread scheduler, `eddy` builds `CurrentThread`: a plain `VecDeque<Notified>` with no atomics on the hot path. `block_on` parks the calling thread on a `Thread::unpark` waker for the root future, drains queued tasks between polls, injects wakes from other threads via a `CURRENT` thread-local `Handle`, and checks the injection queue every `GLOBAL_QUEUE_INTERVAL (61)` polls for fairness. `spawn` inside `block_on` supports `!Send` futures, and `EnterGuard` lets `Handle::current()` work with a clear panic when called outside a runtime. There is no LIFO slot here — nothing to gain, and it would complicate fairness. The tests that earn trust are small and explicit: `block_on(async { 42 })`, 1,000 tasks completing, a task spawning a task, a `!Send` future, and a wake from another thread while blocked in `block_on`.
+
+## Stealing half, at random, from a Chase-Lev deque
+
+The multi-thread scheduler is four pieces: the deque, the injector, the worker, and shutdown.
+
+**Deque.** `LOCAL_QUEUE_CAPACITY = 256`, fixed ring. `tail: AtomicU32` (owner-only), `head: AtomicU64` packing `[steal_head:32][real_head:32]` in one word — two separate atomics would allow a torn read where the owner hands the same task to two thieves. `push_back` (owner-only), `pop` (owner-only, must not race an in-flight steal), `steal_into(dst)` (CAS `steal_head` to claim a range, copy, CAS `real_head`), and `push_overflow` which moves the **older half** to the injector and keeps the new task local — moving the new one causes ping-pong. Steal takes **half**, and every operation documents its `Acquire/Release/AcqRel` with the reason it is needed.
+
+**Injector.** A `Mutex`-guarded intrusive linked list through `Header::queue_next`. Zero allocation per push. `push`, `push_batch`, `pop`, `pop_n`, and an `is_closed` flag.
+
+**Worker.** `Core { tick, lifo_slot, run_queue, is_searching, park, rand }` beside `Shared { remotes, inject, idle, shutdown }`. The loop is `next_task → poll → repeat`, park when nothing is found. Every 61 ticks, `next_task` checks the injector **first** — otherwise a self-replenishing local queue starves external spawns forever. `next_local_task` checks the LIFO slot (one task, non-stealable, `MAX_LIFO_POLLS_PER_TICK = 3`) before the run queue. `steal_work` picks a **random starting victim** to avoid the convoy where every idle worker hammers worker 0, tries each worker once, and respects a searching-worker cap at half the workers. `IdleState` tracks parked workers as a bitmap for O(1) unpark, and the last searching worker to find work unparks another so parallelism never collapses to one.
+
+> Every lock-free structure ships with a loom test in the same commit: single-producer + two thieves with no loss or duplication, `push_overflow` racing a steal, and concurrent injector push/pop. I kept that rule on purpose: the algorithm and its model checker move together or not at all.
+
+<Mermaid label="Fig 3" caption="Stealing discipline. The owner holds the new task; the older half spills to the shared injector. Idle workers steal half at random, and a LIFO slot keeps the waker's target hot for at most three polls." chart={`
+flowchart TB
+  O["owner push_back<br/>task N"] --> F{"deque full?"}
+  F -->|no| Q["local queue<br/>256 slots"]
+  F -->|yes| SP["push_overflow<br/>older half → injector"]
+  SP --> Q
+  Q --> LIFO["LIFO slot<br/>1 task, non-stealable<br/>max 3 polls"]
+  Q --> IDLE{"idle worker<br/>random victim"}
+  IDLE -->|CAS steal_head| HALF["steal half<br/>copy then CAS real_head"]
+  HALF --> Q
+`} />
+
+## Readiness, not completion — with the slab index as the token
+
+The portable I/O path is readiness. `sys::Poller` (`new`, `register`, `reregister`, `deregister`, `wait`) is implemented three ways: Linux `epoll` (level-triggered by default; `EPOLLRDHUP` for half-close; `eventfd` waker), macOS/BSD `kqueue` (`kqueue` + `kevent` with `EVFILT_READ`/`EVFILT_WRITE` merged into one `Ready`, `EVFILT_USER` waker), and Windows `IOCP` (`CreateIoCompletionPort`, `GetQueuedCompletionStatusEx` with `PostQueuedCompletionStatus` wakes and a platform `Fd` alias so the driver compiles on Windows even though `PollEvented` stays `#[cfg(unix)]`). The Windows quirks are documented at the call site rather than worked around silently: a zero-byte `WSARecv` that finds buffered data completes synchronously with no packet, and writes are approximated with a one-shot `WRITABLE` plus re-report on every read completion — the same trade `mio` makes.
+
+The driver never hashes a token. `Slab<Arc<ScheduledIo>>` stores `ScheduledIo { readiness: AtomicUsize, waiters: Mutex<Waiters> }` where `readiness` packs `[generation:32][readiness:16][shutdown:1]` and the **slab index is the epoll/kqueue/IOCP token**, so dispatch is `token → slab lookup → set readiness → wake`. The generation counter is fd-reuse safety: close fd 7, reopen to a new socket that gets fd 7, stale queued events are discarded. `Waiters` holds separate `reader`/`writer` wakers plus an intrusive list — one socket can be read-waited and write-waited by different tasks — and `ReadyEvent::clear_ready()` is essential because epoll can report spuriously and without re-waiting the task spins. `Driver::park(timeout)` is the rendezvous with the timer wheel — the wheel's `next_expiration()` *is* the wait timeout — and the driver runs on whichever worker parks first while others block on a condvar.
+
+## Time is a wheel, and the next deadline is the wait timeout
+
+The timer is a 6-level hierarchical wheel: `Level { occupied: u64, slots: [LinkedList<TimerEntry>; 64] }`, `Wheel { elapsed: u64, levels: [Level; 6], pending }`. 64 slots per level makes indexing a shift+mask, and the `occupied` bitmap makes "next non-empty slot" one `trailing_zeros()` instead of scanning 64 lists. `level_for(deadline)` XORs the deadline with `elapsed`, finds the highest differing bit, and divides by 6. `insert` and `remove` are O(1) via the intrusive list; `advance_to(now)` fires level 0 and **cascades** higher levels down when they wrap, each timer moving down at most 6 times in its life.
+
+```rust
+struct Level { occupied: u64, slots: [LinkedList<TimerEntry>; 64] }
+struct Wheel { elapsed: u64, levels: Box<[Level; 6]>, pending: LinkedList<TimerEntry> }
+```
+
+`TimerEntry` carries intrusive `Pointers`, a deadline, a waker, and a `REGISTERED/PENDING/FIRED/CANCELLED` atomic. `sleep`, `sleep_until`, `timeout`, and `interval` (`Burst/Delay/Skip`) sit on top, and `DelayQueue<T>` adds expiring-collection semantics with opaque `Key`s. Paused-time mode (`time::pause()`, `time::advance()`, `auto_advance`) flips `TimerShared` into a test clock where `arm` compares against the paused `Instant` and the parked schedulers jump to the next deadline instead of sleeping — 10,000 concurrent `sleep`s complete within tolerance in the test that proves it.
+
+<Bars label="Fig 4" caption="Timer wheel cost. 100,000 inserts and cancels stay flat — O(1) by timing, not just asymptotics — and 10,000 concurrent sleeps complete within the wheel's one-tick lateness bound." bars={[
+  { label: "100K inserts + cancels", value: 100, display: "O(1) flat", accent: true },
+  { label: "10K concurrent sleeps", value: 10, display: "deadline order, no early fires" },
+]} max={110} />
+
+## Async I/O where cancel safety is a stated property
+
+On top of readiness, `AsyncRead`/`AsyncWrite` (`poll_read` into a `ReadBuf` that tracks `filled/initialized/remaining` so zeroing is avoided without exposing uninit memory), `poll_write`/`poll_flush`/`poll_shutdown`/`poll_write_vectored`, and `AsyncReadExt`/`AsyncWriteExt` (`read`, `read_exact`, `read_to_end`, `write_all`) are documented with cancel safety on every method — `read` is cancel-safe, `read_exact` is not, and the difference matters the moment a `select!` drops its loser. Every op is the same loop: `readiness(interest).await → try_io(syscall) → on WouldBlock, clear_ready() and loop`, with `EINTR` retried and partial writes handled in `write_all`. `PollEvented<E>` wraps the raw type, `BufReader`/`BufWriter`/`BufStream`/`copy`/`copy_bidirectional`/`empty`/`sink`/`repeat` and `AsyncBufRead` (`read_until`, `read_line`, `lines()`) round it out. `TcpListener`/`TcpStream`/`UdpSocket`/`UnixListener`/`UnixStream`/`UnixDatagram` sit there, `tcp::split()` allows concurrent read+write, `UdpSocket` covers `send_to`/`recv_from`/`connect`/`send`/`recv`, and `edge_triggered_reads_rearm_after_a_short_buffer` enforces the drain-to-`WouldBlock` rule that makes edge-triggered correctness observable.
+
+## The quiet primitive everything rests on
+
+`batch_semaphore` is the primitive underneath every other primitive in `crates/eddy/src/sync`. An intrusive FIFO waiter list, multi-permit `acquire`, and the reason `Pin` exists in the clearest real form: the waiter node lives **inside** the future (`PhantomPinned`), zero allocation per wait even when thousands of tasks contend. The library documents it as the canonical `Pin` example for a reason. On it:
+
+- `Semaphore` (`acquire`, `acquire_many`, `try_acquire`, `add_permits`, `close`), `SemaphorePermit` with `forget`.
+- `Mutex` (1-permit semaphore, FIFO fairness) and `RwLock` (write-preferring, with `try_read`/`try_write` and downgrade).
+- `Notify` with a **stored permit** — a `notify_one` arriving before any waiter is not lost, which is the difference between `Notify` and a condvar and the source of most "my task hangs" bugs.
+- Channels: `oneshot` (one value, `Sender::closed()` for cancellation), `mpsc` bounded (`send().await` back-pressures, `Sender::reserve → Permit` for cancel-safe send, `recv` is cancel-safe and `recv_many` batches, `recv_many` and `reserve` both tested under contention), `mpsc::unbounded_channel`, `broadcast` (ring buffer, per-receiver cursor, `Lagged(n)` rather than stalling the sender), `watch` (latest value, `changed().await`, `borrow_and_update`).
+
+The sync loom set covers the interleavings that matter: semaphore acquire/release/close, `Notify` permit races, oneshot send racing receiver drop, and the two that motivated the harness tests — the intrusive waiter's `PhantomPinned` placement and the `batch_semaphore` acquire queue.
+
+## Combinators, cancellation, and the budget that prevents a starve
+
+`join!` (typed), `try_join!` (short-circuit), `select!` (random branch order by default so a hot branch does not starve a later one, `biased;` for deterministic priority, `else` and `if` guards, and an explicit guarantee that losers are dropped), `race`, `timeout`/`timeout_at`, `FuturesUnordered` (intrusive ready-list so only woken members are polled), `JoinSet`, `StreamExt`, `poll_fn`/`pending`/`ready`/`yield_now`, and `CancellationToken` with child trees. The `select!` fairness test runs 10,000 iterations and asserts the macro actually randomizes.
+
+Cooperation ties back to the scheduler with a single number: `Budget(Option<u8>)` in a thread-local, `BUDGET = 128`, `poll_proceed(cx)` that decrements and, when exhausted, `wake_by_ref()`s and returns `Pending`, reset at the start of each task poll. Every yielding operation consumes budget — channel `recv`, mutex `lock`, I/O readiness — and `unconstrained(fut)` opts out (as `block_on` does). `yield_now` is the explicit cooperation point. The test that proves it is the canonical starvation failure, on purpose:
+
+```rust
+#[test]
+fn draining_a_channel_does_not_starve_other_tasks() {
+    // loop { rx.recv().await } on an always-ready channel
+    // must not monopolize the worker — budget forces a yield at 128
+}
+```
+
+Without that budget, a task sitting on an always-ready channel never yields. With it, it yields after exactly 128 ops and the other tasks run.
+
+## Threads you are allowed to block
+
+`BlockingPool` is not a nice-to-have, it is the escape hatch for `spawn_blocking(f) → JoinHandle<R>` where `f: FnOnce() + Send + 'static` runs off the async workers. The pool is dynamically sized, 512 threads max by design (these threads are *blocked on I/O*, not burning CPU), 10s `keep_alive`, condvar job queue, lazy spawn on demand, and a `block_in_place(f)` that hands the current worker's queue to a replacement so blocking work can borrow non-`'static` data. Multi-thread only — inside `CurrentThread` it panics with a clear message rather than deadlocking — and `block_in_place` cooperates with worker handoff so that all workers calling it at once never wedges the runtime. `BlockingPool` tasks are not cancellable once started, which the docs call out rather than imply. Shutdown waits for in-flight jobs and joins every thread; no thread outlives the runtime.
+
+## The Linux path: io_uring as a completion backend
+
+Readiness got you portable I/O. `io_uring` is the completion path — Linux-only, feature-gated behind `io-uring`, runtime-selected at startup (the readiness driver remains the portable default). The ring is deliberately raw: no `io-uring` crate, the buffer lifetime rules stay visible, and the fallback is explicit (`probe`/`new_or_fallback`; a dedicated Linux kernel is still required for release validation because shared GitHub kernels don't reliably deliver CQEs).
+
+The design problem is use-after-free the borrow checker cannot see: the kernel writes into your buffer after the future is dropped.
+
+> Three alternatives: copy the buffer per operation, leak the buffer, or retain an owned buffer in the operation's slab until its CQE arrives. `eddy` retains: `read(buf: Vec<u8>) → (io::Result<usize>, Vec<u8>)` — buffer in, buffer back out. Copying is slow, leaking is unbounded, retaining bounds cancelled memory to operations still in flight and keeps every kernel-visible buffer alive until its CQE.
+
+That retaining lives in two slabs: `ops: Slab<OpState>` keyed by `user_data` and an `orphaned: Slab<OrphanedOp>` where a cancelled op's buffer lives until its CQE, plus `IORING_OP_ASYNC_CANCEL` where the kernel supports it. Ops cover `READ/WRITE/TIMEOUT`, `READV/WRITEV/ACCEPT/CONNECT/SEND/RECV/CLOSE`, batched `io_uring_enter` once per park, `SQPOLL` behind a flag, registered fixed buffers and fixed files, and the newest piece — **safe multishot accept/recv**.
+
+<Figure label="Fig 5" caption="Owned-buffer discipline. The operation owns the buffer until the CQE; a dropped future moves to the orphan slab and a best-effort cancel is sent, but the buffer is not released until the kernel replies." children={
+  <Mermaid chart={`
+flowchart LR
+  F["future owns Vec<u8>"] --> S["submit SQE<br/>kernel owns the bytes"]
+  S --> C{"future dropped<br/>before CQE?"}
+  C -->|no| R["CQE → return (result, Vec<u8>)"]
+  C -->|yes| O["orphan slab<br/>buffer retained"]
+  O -->|IORING_OP_ASYNC_CANCEL| K["kernel CQE"]
+  K --> D["drop buffer<br/>now safe"]
+`} />
+} />
+
+Multishot is where `io_uring` earns its keep for servers: one `ACCEPT` SQE produces an unbounded stream of `ACCEPT` CQEs, one `RECV` SQE produces an unbounded stream of buffer-selected receives. That is also where a single-CQE design would lose events or close the wrong descriptor. `eddy`'s backend treats multishot as a distinct state: `AcceptMultishot` / `RecvMultishot` streams queue per-shot CQEs (`IORING_CQE_F_MORE` means more to come), copy each received packet out before returning its provided buffer to the kernel ring, and retain orphaned multishot state through `IORING_OP_REMOVE_BUFFERS` cleanup rather than leaking or freeing too early. The SQE/CQ mapping constants (`IORING_OFF_SQ_RING`, `IORING_OFF_CQ_RING`, `IORING_OFF_SQES`) and the `CONNECT` SQE encoding surfaced as real kernel-mismatch bugs during container testing — the CQE queue catches those mismatches, which is why this backend is tested in a real kernel and not mocked. `AsyncReadOwned`/`AsyncWriteOwned` expose the completion traits for executor integration.
+
+## When you can see starvation, you fix it
+
+A runtime that cannot explain itself is hard to tune and harder to trust. `eddy` instruments every load-bearing event and makes the feed observable in two places, with zero cost when disabled (inline no-ops, subscriber atomic fast path).
+
+The event vocabulary is small: `TaskSpawned` (name, spawn location via `#[track_caller]`, parent), `TaskPollStart`/`TaskPollEnd` (duration + `Ready`/`Pending`/`Panicked`), `TaskWoken { by: WakeSource }` (`Io { fd }`, `Timer { id }`, `Task(u64)`, `Channel { kind }`, `External`) — the causality edge that makes the wake graph possible — `WorkerPark`/`Unpark`/`Steal`/`QueueDepth`, `IoRegistered`/`IoReady`, `TimerSet`/`TimerFired { lateness }`, `BlockingDetected` (when a poll exceeds 100ms, with spawn location), `BudgetExhausted`, `ResourceContended`, plus per-task cumulative stats and a poll-duration log-bucket histogram. The codec is a length-prefixed stable frame over a Unix socket; a `RuntimeMetrics` handle offers programmatic access, and `task dump` captures all task states on demand.
+
+The TUI and the web console are two lenses on the same stream.
+
+- **Task list** (default view, sortable by `t/b/i/p`, filter by `/`, detail on `Enter`): `ID`, `name`, `state`, `Total`, `Busy`, `Idle`, `Sched`, `Polls`, spawn location, poll-duration histogram, warning lamps for blocking and variance, and `pause`/`resume` with `space`.
+- **Worker & Queue heatmap:** one row per worker with queue-depth samples, steal events as arrows from victim to thief, global queue as a strip, park/unpark markers. A saturated worker beside idle ones is not a number, it is a row.
+- **Wake causality graph:** nodes are tasks, edges are `woke`. SVG today (D3/dagre are not required by the current UI), cycle highlighting for the busy-loop bug, root nodes (I/O or timer) distinguished from task-woken ones, click-through to task detail and time-scrubbing.
+- **Poll Duration Distribution:** per-task `p50/p99/max`, a red 100ms threshold line, sort-by-p99 to surface the one bad handler.
+- **Runtime Metrics:** active tasks, queue depths, steal/park rates, worker busy ratio, timer lateness — the wheel's accuracy made visible.
+
+The web console's four celebrated views — **Task Lifecycle Swimlanes** (gray idle / yellow scheduled / green running), the heatmap, the wake graph, and the poll distribution — exist because starvation is a shape. A task whose queued segment never shrinks while worker pressure stays high is a budget or `GLOBAL_QUEUE_INTERVAL` bug, and you see it before you profile it. The TUI keeps the same invariants: the resource view lists mutex/semaphore holders and waiter queues, the async-op view maps which tasks wait on which resources, and the warning lamps catch a blocking poll the moment it crosses the threshold.
+
+## Correctness is not a green suite
+
+A green suite proves you didn't observe a bug on this run. It does not prove the interleaving wasn't wrong. For a runtime where a dropped fiber is a silent hang, that distinction matters, so the correctness story is three layers.
+
+**loom** is the gate. Every lock-free structure gets its model test in the same commit: task state transitions (poll/wake/complete/abort interleavings), refcount `clone/drop` racing the final `dealloc`, `wake_during_poll_is_never_lost`, Chase-Lev 1-producer + 2-thieves with no loss or duplication, `push_overflow` racing a steal, injector concurrent `push/pop`, `batch_semaphore` acquire/release/close, `Notify` permit races, oneshot send racing receiver drop, `ScheduledIo` readiness + waker registration, timer fire vs cancel, and the `CURRENT` thread-local handle. `RUSTFLAGS='--cfg loom' cargo test -p eddy --lib` is a blocking CI job, bounded preemptions, under ten minutes.
+
+**Miri** covers the unsafe core: task allocation, waker vtable, intrusive lists, `ReadBuf`. Stacked-borrows clean, no `-Zmiri-tag-raw-pointers` suppressions, `-Zmiri-strict-provenance` clean — the intrusive-list violation that once hid there is documented as `ISSUES.md C3` and fixed, not suppressed.
+
+**Differential and stress.** Bounded channel, `select!`, and timeout traces run against Tokio on the same workload and assert same results within tolerance (timer lateness is never compared byte-for-byte; host scheduling is inherently variable). A property test drops every shipped future at a random poll count and asserts `Issued → Completed ∪ Abandoned` — no lost work for the cancel-safe set. A 10-minute soak at max concurrency (scheduled as a bounded-CI + dedicated-stress pair, 64 concurrent tasks with a 5-second progress deadline in CI and the long RSS-free run on the schedule) asserts no deadlocks and no registered tasks left. A watchdog dumps all task states if no task completes for 30s.
+
+And the hardware that x86 hides: `aarch64-unknown-linux-gnu` under `qemu-user` with `qemu-aarch64 -L /usr/aarch64-linux-gnu` exists to catch the weak-memory bug x86 lets you ship.
+
+## Benchmarks, with the miss left in
+
+`criterion` runs direct comparisons against Tokio on the local machine (`--quick` in the quick loop, full runs in CI). On an Apple Silicon macOS development host, the quick snapshot today is:
+
+<Bars label="Fig 6" caption="Quick Criterion snapshot on Apple Silicon, median wall-clock time, lower is better. The channel wins are the intrusive batch_semaphore and its reserve path; the spawn/ping-pong gap is allocation. Measure on your hardware before trusting any of it." bars={[
+  { label: "spawn/join 10K", value: 11.22, display: "11.22ms (Tokio 3.68ms · 3.05×)", accent: true },
+  { label: "ping-pong 1M", value: 0.53, display: "0.53ms (0.22ms · 2.45×)" },
+  { label: "bounded ch", value: 40.28, display: "40.29µs (137.87µs · 0.29×)" },
+  { label: "unbounded ch", value: 38.71, display: "38.71µs (132.52µs · 0.29×)" },
+  { label: "mutex 1 task", value: 35.92, display: "35.92µs (41.91µs · 0.86×)" },
+  { label: "mutex 16 tasks", value: 76.49, display: "76.49µs (53.80µs · 1.42×)" },
+]} max={50} />
+
+The interesting part is the *shape* of the miss. Spawn/join and ping-pong are slower — about 3× and 2.45× — which is where one `alloc` per task and `RawWakerVTable` indirection actually cost. Bounded and unbounded channel throughput are faster — 0.29× — which is where `batch_semaphore`'s intrusive zero-alloc waiters and the `reserve` + `recv_many` batching pay back. Mutex contention at 1 task is cheaper, at 16 it is more expensive. Instrumentation overhead for the dedicated 10K spawn/join benchmark measures +3.1% median when enabled versus disabled, inline no-op plus subscriber atomic, disassembly-verified. And `io_uring` vs epoll echo (10K connections, 64B messages, Linux gated) is in the same bench — a `#[cfg(all(target_os = "linux", feature = "io-uring"))]` comparison where the Linux host is the only honest place to measure it. Take the table as a ceiling from a quick run on one machine, not a claim. The repo invites you to re-run it on yours.
+
+## Try it, measure it, break it
+
+The fastest way to understand the trade-offs is to change them and watch the dashboard move.
+
+```rust
+use eddy::io::TcpListener;
+
+fn main() {
+    eddy::Runtime::new().block_on(async {
+        let listener = TcpListener::bind("127.0.0.1:8080").await.unwrap();
+        let (mut stream, _) = listener.accept().await.unwrap();
+        // readiness + ReadBuf + drain semantics, all in one place
+        let mut buf = vec![0u8; 1024];
+        let n = eddy::io::AsyncReadExt::read(&mut stream, &mut buf).await.unwrap();
+        eddy::io::AsyncWriteExt::write_all(&mut stream, &buf[..n]).await.unwrap();
+    });
+}
+```
+
+```text
+# the five local gates
+cargo test -p eddy --all-targets
+cargo test -p eddy-macros --all-targets
+cargo clippy -p eddy --all-targets -- -D warnings
+cargo fmt --all -- --check
+RUSTFLAGS='--cfg loom' cargo test -p eddy --lib   # model checks
+
+# Linux completeness (container, not mocked)
+podman machine init --cpus 2 --memory 2048 --disk-size 10 eddy-linux
+podman run --rm -v "$PWD:/src" -w /src rust:1.87 \
+  cargo test -p eddy --features io-uring -- --ignored
+
+# the dashboards
+cargo run -p eddy-console -- --replay docs/assets/demo.bin
+cargo run -p eddy-console-web  # bridges the Unix socket → WebSocket
+```
+
+The `examples/` — `echo`, `chat`, `http_server`, `tcp_proxy`, `graceful_shutdown`, `spawn_blocking` — are the sixth gate. They are not toys, they are the proof that `cancellation_token` child trees, `FuturesUnordered` readiness, and `block_in_place` handoff actually compose under real I/O. If you want to see a starvation bug, run `loop { rx.recv().await }` without the budget and watch the swimlane stay yellow.
+
+## Where this sits — and what it gives up
+
+`eddy` is not Tokio, and it does not try to be yet. It chose explicitness over breadth: no `net` sprawl beyond `Tcp`/`Udp`/`Unix` (enough to build an echo server, a chat room, and an HTTP server), a timer wheel bounded at 6 levels rather than a calendar queue, an `io_uring` backend that stays Linux-only and feature-gated because shared CI kernels still don't reliably deliver CQEs and the honest verification is a dedicated Linux host (see [`docs/verification.md`](https://github.com/sanskarpan/eddy-runtime/blob/main/docs/verification.md)), and instrumentation that is zero-cost when off rather than always-on.
+
+It also chose to pay a measurable cost for a smaller `unsafe` surface. The single allocation per task, the intrusive queues, the `Pin`-inside-the-future waiter — each removed an allocation or a branch at the price of one more invariant to state in a loom test. That trade shows up in the numbers above: channels win where the batching removed work, spawn loses where the allocation stayed singular. I left the mismatches in the article for the same reason the repo checks in the tables: a number you can reproduce is more useful than a number you can admire.
+
+The through-line across 19 phases is the same move at different layers. Make one thing obviously correct in isolation — a `Future` that can be spawned, polled, woken, and completed on one thread — and then, at each expansion, keep the previous invariant while adding exactly one new source of concurrency, with a checker that can refute it. Task state and the waker first, then the current-thread executor, then the work-stealer, then the reactor, then the wheel, then the sync primitives and their budgets, then the completion backend that competes with readiness for the same buffer. Every step has a diagram, a test that witnesses the failure mode, and a checker that argues about the interleaving rather than the output.
+
+The [repo is the argument](https://github.com/sanskarpan/eddy-runtime), the [book is the map](https://sanskarpan.github.io/eddy-runtime/), and the two GIFs at the top are the distribution made visible — four workers, ten tasks, wake edges, steal arrows, and the pressure that never hides when the feed is live.
