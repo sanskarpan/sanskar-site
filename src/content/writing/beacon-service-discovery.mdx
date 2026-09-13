@@ -1,0 +1,156 @@
+---
+title: "Beacon: measuring the stale-endpoint window"
+description: "I built a Consul-class service discovery system in Go to answer the one question nobody puts a number on: an instance dies — how long until clients stop sending it traffic? Gossip plus streaming converges in ~2s. Health checks plus DNS takes ~45s. The 22× spread is the whole post."
+date: 2026-09-11
+tags: ['go', 'distributed-systems', 'gossip']
+draft: true
+---
+
+import Mermaid from '../../components/Mermaid.astro';
+import Bars from '../../components/Bars.astro';
+import Figure from '../../components/diagrams/Figure.astro';
+import BeaconTimeline from '../../components/diagrams/BeaconTimeline.astro';
+
+Every service mesh promises fast failover. Almost none of them will tell you, in seconds, how long a dead instance keeps receiving traffic after it dies.
+
+That gap bothered me enough to build a system around it. Beacon is a Consul-class service discovery plane in Go. The catalog holds a monotonic index with TTL leases. Agents check over loopback with hysteresis. Gossip or Raft replicates, watches fan out, and DNS plus HTTP plus gRPC plus xDS read the same state. The client SDK resolves and balances from it. In practice the index is the contract and everything else is a view. Two consistency backends run side by side in one binary, AP and CP, so the trade-off between them is something you run rather than something you argue about.
+
+First, the honest framing, because it shapes everything below. Beacon does not reimplement SWIM from scratch, and it does not reimplement gRPC interceptors. It depends on narrow interfaces — a `Membership` seam for gossip, an interceptor chain with an `OutcomeReporter` for passive health — and ships an in-process SWIM fabric for tests and simulation. The production SWIM adapter is still an open item. So this is not a "look what I built from scratch" story. It is a "the measurement is the deliverable" story, and the measurement is real.
+
+## The only metric that matters
+
+An instance crashes. Four things have to happen before the traffic stops:
+
+**t1, detection.** Something notices the instance is dead. A health checker waits out its interval times its failure threshold. A gossip member misses SWIM probes for a couple of protocol periods.
+
+**t2, propagation.** The news travels to every catalog replica. An agent check result is one RPC. A gossip delta takes O(log N) rounds.
+
+**t3, notification.** Watchers find out. A streaming connection hears in milliseconds. A blocking query waits out its timeout. A DNS consumer waits out the record TTL and whatever the stub resolver cached on top of it.
+
+**t4, the client applies it.** A gRPC resolver swaps endpoints immediately. A pooled HTTP client keeps a dead connection until it retires.
+
+The stale-endpoint window is t0 to t4, end to end. Detection costs interval-times-failures on health checks against a couple of SWIM periods on gossip. Propagation costs O(log N) rounds. Notification costs milliseconds on streaming or a full record TTL on DNS. `bench propagate` in `pkg/sim/propagate_measure.go` reports the four stages separately, so the trade is something you run instead of something you assert.
+
+<Mermaid label="Fig 1" caption="The shape of Beacon. Work enters through the SDK, the agent holds the truth locally, the catalog serializes it into an index, replication spreads it, and every run of the pipeline lands in one resolver state — all under a single TraceID." chart={`
+flowchart TB
+  SDK["SDK Register<br/>traceID assigned"]
+  Agent["beacon-agent<br/>local state · authoritative"]
+  Catalog["catalog write<br/>monotonic index N"]
+  Repl["replication<br/>gossip delta · Raft quorum"]
+  Watch["watch registry<br/>blocking · streaming · SSE"]
+  Client["client resolver<br/>UpdateState · picker serves"]
+  SDK --> Agent --> Catalog --> Repl --> Watch --> Client
+`} />
+
+## Health checks: agent-local, over loopback
+
+There are two questions you can ask about an instance, and they sound the same until a partition separates them. "Can this instance serve traffic" is a question about the instance. "Can the control plane reach this instance" is a question about the network between the control plane and the instance. A central checker answers the second one and pretends it answered the first. Under a partition between the control plane and the data plane, the answers diverge — and the load balancer needs the first.
+
+So Beacon checks from the agent, over loopback, next to the thing being checked. The scaling math is what forces it. Ten thousand instances checked every five seconds is two thousand checks per second from a central plane, across the network, into every corner of the fleet. Agent-local, it is roughly ten checks per agent, over loopback. Central checking does not scale and answers the wrong question. That is a rare combination: usually you only get one of the two.
+
+Two details matter here. The first is hysteresis: a flapping check must produce zero state transitions, not merely few, because every transition is an index bump that wakes every watcher. The second is that the agent's local state is authoritative. If the catalog is wiped, agents repopulate it within one anti-entropy interval. If an operator deletes an agent-owned instance from the catalog, the agent puts it back. The catalog is a cache with an index. The agent is the truth.
+
+## The index: silent unless status changed
+
+Every mutation that changes observable state bumps a global `ModifyIndex`, and watchers block until the index passes what they last saw. The load-bearing micro-rule is in `UpdateHealth`:
+
+```go
+// UpdateHealth sets instance health. Index bumps ONLY if status changed.
+func (s *Store) UpdateHealth(ctx context.Context, id string, status HealthStatus) (uint64, error) {
+	// ...
+	if inst.Health == status {
+		return s.index, nil // no change → no bump → no wakeups
+	}
+	// ...
+}
+```
+
+Without that early return, a healthy fleet of ten thousand instances checked every five seconds generates two thousand index bumps per second and wakes every watcher continuously, forever, to learn that nothing happened. The no-bump rule turns steady-state health checking from a constant broadcast storm into silence. Silence is the correct output of a monitoring system when nothing is wrong, and it is remarkable how rarely systems are built to produce it.
+
+The same instinct runs through the registration-storm defences. Index bumps batch inside a 50ms window, so a thousand deploys wake watchers once instead of a thousand times. Watch timeouts carry ±16% jitter so reconnects never phase-lock into a herd. Notifications fan out staggered over up to 500ms. Identical concurrent resolves collapse through singleflight. Registration itself is rate-limited per client with HTTP 429 and Retry-After. Each of these is boring. Together they are the difference between a control plane that survives a deploy and one that falls over exactly when you are watching it most closely.
+
+<Figure label="Fig 2" caption="The stale-endpoint window, t0 to t4. Detection dominates: ~2s via gossip against ~15s via health checks is decided before a single byte propagates. Notification decides the rest.">
+  <BeaconTimeline />
+</Figure>
+
+## Gossip: the fast path through the seam
+
+A health checker detects death in interval-times-failures: five seconds times three strikes is fifteen seconds of sending traffic to a corpse. A SWIM member detects it in roughly two protocol periods, about two seconds, because missing probes compound faster than passing thresholds expire. The fast configuration does not propagate faster so much as it starts earlier, and that head start is most of the 22× at the end.
+
+> **Status note.** What runs in the production path today is UDP gossip behind the `Membership` seam plus an in-process SWIM fabric for tests and sim — deterministic, injectable-clock, fully covered. A real SWIM adapter exists in tree but is not what the server wires yet; that integration is tracked work, not shipped work. The numbers below measure the wired path, and the seam is what keeps that honest: swapping the transport must not change the catalog contract.
+
+Node failure flows through the same path as everything else. The membership layer calls the node dead, the AP backend marks its instances critical, the index bumps once per service, and watchers wake. There is no separate failure pipeline with its own bugs. One path, exercised by every test, carrying both mundane updates and node death. That is a deliberate trade: the seam constrains what gossip implementations are acceptable, and in exchange the failure path gets the same coverage as the happy path instead of rotting in a corner until a real outage finds it.
+
+<Mermaid label="Fig 3" caption="The failure path is the happy path. A dead instance travels the same check-to-catalog-to-gossip-to-watch chain as any update, and EvConverged fires when every member holds the delta for that TraceID — one pipeline, covered by every test." chart={`
+sequenceDiagram
+  participant A as agent check
+  participant C as catalog
+  participant G as gossip peers
+  participant W as watchers
+  participant R as client resolver
+  A->>C: UpdateHealth critical (index N+1)
+  C->>G: CatalogDelta piggyback
+  G-->>W: staggered notify
+  W-->>R: UpdateState, never empty
+  Note over R: EvConverged when every member holds it
+`} />
+
+## Consistency: AP and CP behind one flag
+
+Beacon ships both backends behind `--consistency ap|cp`. Same catalog API, same watchers, same DNS and xDS surface. AP stays writable under partition and serves stale reads. CP takes linearizable reads via ReadIndex, and the minority rejects writes instead of accepting them. That is a deliberate trade: one binary turns consistency from doctrine into a per-workload setting you measure.
+
+<Mermaid label="Fig 4" caption="One partition, two promises. AP keeps both sides writable and serves stale endpoints; CP keeps the majority writable and the minority refuses. The client-visible difference is a stale read versus a refused write." chart={`
+flowchart LR
+  subgraph AP["AP · gossip"]
+    A1["majority side<br/>accepts writes"]
+    A2["minority side<br/>accepts writes · stale reads"]
+  end
+  subgraph CP["CP · Raft"]
+    C1["majority side<br/>accepts writes"]
+    C2["minority side<br/>rejects writes · no quorum"]
+  end
+  A2 -. partition .-> C2
+`} />
+
+Concretely, discovery reads tolerate a two-second-stale endpoint list while the writes that reconfigure routing during an incident are exactly the ones you want linearized. Running both backends against the same virtual-clock harness is what lets you say that with 2.011s against 15.061s against 45.15s p50 instead of a paragraph.
+
+## The numbers: simulated on a virtual clock
+
+`MeasurePropagation` runs each of the four detection-plus-notification configurations through reps and nodes on a virtual clock — no wall-time waits — and reports the four stages separately: detect, propagate, notify, apply. The headline is the total, p50:
+
+<Bars label="Fig 5" caption="Stale-endpoint window by configuration, p50. Simulated on a virtual clock via beacon bench propagate (pkg/sim/propagate_measure.go): the ~22× spread between configurations is the claim, not production p99s. Measure on your own fleet." bars={[
+  { label: "gossip + streaming", value: 2.011, display: "2.011s", accent: true },
+  { label: "health + streaming", value: 15.061, display: "15.061s" },
+  { label: "health + blocking", value: 17.56, display: "17.56s" },
+  { label: "health + DNS", value: 45.15, display: "45.15s" },
+]} max={46} />
+
+I want to be precise about what these are: simulated convergences, not fleet measurements. The absolutes depend on the configured intervals; yours will differ. What transfers is the shape, and the shape is stable enough to build on.
+
+```bash
+go run ./cmd/beacon bench propagate
+```
+
+The full stack runs locally if you want the visual version: three servers, an agent, the console, Prometheus, and Grafana from one compose file. The console's propagation timeline draws the t0-to-t4 bars from the running cluster while the benchmark prints them.
+
+![Beacon demo: steady state, instance dies, SWIM marks it critical, deltas propagate, clients converge](/beacon-demo.gif)
+
+The GIF sketches the lifecycle the harness measures. The console draws the same t0-to-t4 bars from three servers plus one agent under compose, with Prometheus and Grafana attached. Watch the timeline there, trust the virtual-clock numbers here.
+
+## "Isn't this just Consul with a benchmark?"
+
+Fair question, and the answer is the post. Consul never published the per-configuration stale window as the deliverable; its numbers live in conference slides, not in a command you can run. Beacon's differences fit in one paragraph. The index stays silent unless status actually changes, so steady state costs nothing. Agent-local checks answer whether the instance can serve instead of whether the control plane can reach it. AP and CP ship in one binary behind one flag, measured by the same harness. None of these is exotic on its own. Together they are a system whose central claim — 2.011s against 45.15s p50 — you can reproduce before you believe.
+
+## What I would keep, and what I would change
+
+I would keep the agent-local checks; the semantics argument gets stronger every time I re-examine it, and the scaling math was never close. I would keep the no-bump rule, because silence under steady state is the property everything else compounds on. I would keep AP and CP in one binary — it turned the consistency discussion from doctrine into a flag and a benchmark. And I would keep the TraceID from day zero, because a propagation claim without end-to-end correlation is just a fast anecdote.
+
+What I would change is sequencing, and this one is specific. The xDS server defined a removal order and then never used it — teardowns pushed child-before-parent until the audit pass caught it as H16, because no contract test pinned push order from the first resource type. The SDK resolver's never-empty guarantee is the one place I wrote the contract first, and it never broke once. Every interface since gets the same treatment: declare the invariant, pin it, then grow the surface. Two items are still genuinely open: wiring the in-tree SWIM adapter into the server path, and a real WAN-partition-between-datacenters test. I would rather state both than let the post imply otherwise.
+
+## The lesson
+
+Discovery systems are not judged on their APIs. They are judged on the window between death and convergence, measured end to end, per configuration, with the slow path included. Build the catalog, put the checks next to the truth, keep the index silent when nothing changed, replicate both ways, and then measure the thing you actually promised.
+
+The [code is on GitHub](https://github.com/sanskarpan/beacon). The [docs are published](https://sanskarpan.github.io/beacon/). `bench propagate` is the file I would run first.
+
+The WAN partition test is the post I will write when the harness can gate it.
