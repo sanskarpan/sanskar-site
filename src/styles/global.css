@@ -594,6 +594,47 @@ html.dark .astro-code span { color: var(--shiki-dark) !important; background: va
 .prose h2, .prose h3, .prose h4, .article__head { scroll-margin-top: 5.5rem; }
 .prose p, .prose li, .prose a, .prose code { overflow-wrap: break-word; }
 
+/* Mathematical notation in long-form writing. Native MathML keeps fractions,
+   powers, and grouped expressions readable without a client-side renderer. */
+.prose .equation {
+  margin: 1.7rem auto;
+  padding: 1rem 1.2rem 0.85rem;
+  border-block: 1px solid var(--line);
+  text-align: center;
+  overflow-x: auto;
+}
+.prose .equation math {
+  color: var(--ink);
+  font-family: 'STIX Two Math', 'Cambria Math', 'Times New Roman', serif;
+  font-size: 1.3rem;
+  line-height: 1.2;
+}
+.prose .equation-inline {
+  display: inline-block;
+  vertical-align: -0.12em;
+  color: var(--ink);
+  font-family: 'STIX Two Math', 'Cambria Math', 'Times New Roman', serif;
+  font-size: 1.05em;
+  line-height: 1;
+}
+.prose .equation__caption {
+  display: block;
+  margin-top: 0.55rem;
+  color: var(--muted);
+  font-family: var(--font-mono);
+  font-size: 0.68rem;
+  line-height: 1.4;
+}
+.prose .probviz-gif {
+  width: 100%;
+  height: auto;
+  aspect-ratio: 16 / 9;
+  object-fit: contain;
+  margin: 0;
+  background: var(--paper);
+}
+.prose .figure:has(.probviz-gif) .figure__frame { padding: 0; overflow: hidden; }
+
 /* ---------- Uses page rows ---------- */
 .uses-row {
   display: grid; grid-template-columns: 12rem 1fr; gap: 0.5rem 1.5rem;

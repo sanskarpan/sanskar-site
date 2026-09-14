@@ -1,276 +1,338 @@
 ---
-title: Visualizing probability, for real
-description: "16 univariate distributions and the multivariate, copula, mixture, fitting, Monte Carlo, and testing toolkits that make them useful — wrapped in a Streamlit explorer and a typed Python library you can pip install as probviz."
-date: 2026-09-13
+title: Making probability visible
+description: "Why I built probviz: a Python library and Streamlit explorer for seeing distributions, sampling from them, fitting them to data, and understanding dependence instead of memorising formulas."
+date: 2026-09-14
+updated: 2026-09-14
 tags: ['python', 'statistics', 'visualization']
 draft: false
 ---
 
 import Mermaid from '../../components/Mermaid.astro';
-import Bars from '../../components/Bars.astro';
 import Figure from '../../components/diagrams/Figure.astro';
+import Bars from '../../components/Bars.astro';
 
-Probability has a shape, but most textbooks hide it behind a formula. A normal is `exp(-(x-μ)²/2σ²)/√2πσ` until you drag σ and watch the bell flatten, or until you draw 1,000 samples and the histogram stops arguing. I wanted one place where that loop — *formula → picture → sample → fit* — is tight and honest, for 16 univariate distributions and for the multivariate, copula, and mixture machinery that real work actually needs. The result is **probviz**, a Streamlit explorer plus a typed Python library, now on PyPI as [`probviz`](https://pypi.org/project/probviz/) with [docs on GitHub Pages](https://sanskarpan.github.io/probviz/). Try it before you read on:
+A probability distribution is usually introduced as a formula and remembered as a silhouette. That is a poor way to learn one. The useful question is not only “what is the density?” It is: what does the density look like, what samples does it produce, what parameters control it, and does it describe the data in front of me?
 
-```bash
-pip install probviz          # or pip install "probviz[test]" for the suite
-probviz app                  # opens the explorer on :8501
-probviz test                 # 694 tests, same suite CI runs on 3.10–3.12
-```
+I built **probviz** to keep those questions together. It is a typed Python library and a Streamlit explorer for probability distributions, sampling, fitting, dependence, Monte Carlo, and statistical tests. It is now published on [PyPI](https://pypi.org/project/probviz/), with [source on GitHub](https://github.com/sanskarpan/probviz) and [documentation on GitHub Pages](https://sanskarpan.github.io/probviz/).
 
-The [repo is on GitHub](https://github.com/sanskarpan/probviz). Everything below is `pip install probviz` importable, and the app is one command away.
-
-## The loop you actually learn from
-
-Statistics is not a list of PDFs. It is a loop: you posit a distribution, you look at it, you sample from it, you check whether your data looks like it, and you quantify how wrong you are. Most visualizers give you the second step and stop. Most libraries give you the last two and make you wire the pictures yourself. probviz keeps the four in one place with one API shape.
-
-<Mermaid label="Fig 1" caption="Formula, picture, sample, and test in one loop — the shape the project is organized around." chart={`
-flowchart LR
-  F["formula<br/>Distribution"] --> P["picture<br/>pdf / cdf"]
-  P --> S["sample<br/>rvs(size)"]
-  S --> T["test / fit<br/>KS, t-test, MLE"]
-  T --> F
-  P -.->|drag σ, α, λ| P
-  S -.->|histogram| P
-`} />
-
-The invariant is small: every distribution is a `Distribution` with the same verbs — `pdf`/`cdf`/`ppf`/`rvs`/`mean`/`var`/`entropy`/`interval` — whether it is a Bernoulli or a Gumbel copula mix. The uniformity is the feature. If you can plot a normal, you can plot a mixture with the same call.
-
-## 16 univariate distributions, with real parameter bounds
-
-Ten continuous and six discrete, each a thin, validated facade over `scipy.stats`. The facade earns its keep: it binds the SciPy frozen distribution, exposes `get_parameters`/`get_parameter_bounds`/`set_parameters`, and validates ranges so a slider cannot silently put you at `σ = 0`.
-
-```python
-from src.distributions.continuous import NormalDistribution, BetaDistribution
-from src.distributions.discrete import BinomialDistribution
-
-n = NormalDistribution(mu=0, sigma=1)
-n.pdf(0)          # 0.3989...
-n.cdf(1.96)       # 0.975
-n.ppf(0.5)        # 0.0
-n.rvs(size=1000, random_state=0).mean()  # ≈ 0
-n.interval(alpha=0.95)  # central 95% interval
-
-b = BetaDistribution(alpha=2, beta=5)
-b.pdf(0.5)
-b.get_parameter_bounds()   # {'alpha': (0.1, 10), 'beta': (0.1, 10)}
-```
-
-| Continuous (10) | Discrete (6) |
-|---|---|
-| Normal `μ, σ`, Exponential `λ`, Uniform `a,b`, Beta `α,β`, Gamma `shape,scale`, Chi-Square `df`, Student-t `df`, Weibull `shape,scale`, Lognormal `μ,σ`, Cauchy `x₀,γ` | Binomial `n,p`, Poisson `λ`, Geometric `p`, Negative Binomial `r,p`, Hypergeometric `M,n,N`, Discrete Uniform `low,high` |
-
-Every continuous entry caps its support honestly: the Cauchy reports `mean` → `nan` rather than pretending. Every discrete entry dispatches `pdf` → `pmf`. The contract is boring, and boring is portable.
-
-## Multivariate, copulas, and the dependence you cannot see in one dimension
-
-A multivariate normal is not “two normals.” It is a mean vector and a covariance whose off-diagonal is the dependence. probviz gives you four multivariate laws — `MultivariateNormalDistribution`, `DirichletDistribution`, `MultivariateStudentT`, `WishartDistribution` — each with `pdf`/`logpdf`/`rvs`/`mean`/`cov`/`marginal`/`conditional`/`mahalanobis`, plus two plotters that actually earn their import.
-
-```python
-from src.distributions.multivariate import MultivariateNormalDistribution
-
-mvn = MultivariateNormalDistribution(mean=[0, 0], cov=[[1, 0.5], [0.5, 1]])
-mvn.pdf([0, 0])
-mvn.conditional(indices=[0], values={1: 1.0})  # Schur complement
-mvn.rvs(size=10, random_state=0).shape  # (10, 2)
-```
-
-Copulas are where dependence lives after you have stripped the marginals. Four are implemented — `GaussianCopula`, `ClaytonCopula`, `GumbelCopula`, `StudentTCopula` — with the right guardrails: Clayton and Gumbel are bivariate-only for `pdf`/`rvs` and say so in an explicit `NotImplementedError`; Student-t documents `cdf`/`pdf` as intentionally unimplemented and offers Monte Carlo via `rvs` instead of inheriting a bare exception; `fit_copula_to_data` validates Kendall's τ ranges and documents its `df=4` simplification.
-
-<Mermaid label="Fig 2" caption="A copula separates marginals from dependence — fit the rank correlation, then sample uniform pairs." chart={`
-flowchart LR
-  D["data<br/>X in R^{n×2}"] --> R["pseudo-obs<br/>rank/(n+1)"]
-  R --> TAU["Kendall τ"]
-  TAU --> TH["θ for Clayton/Gumbel<br/>or Σ for Gaussian"]
-  TH --> RV["rvs → U in (0,1)²"]
-  RV --> PP["quantile transform<br/>marginals"]
-`} />
-
-```python
-from src.distributions.copulas import GaussianCopula, fit_copula_to_data
-import numpy as np
-
-cop = GaussianCopula(correlation=np.array([[1, 0.5], [0.5, 1]]))
-u = cop.rvs(n_samples=1000, random_state=0)   # reproducible via default_rng
-u2 = cop.rvs(n_samples=1000, random_state=0)  # np.allclose(u, u2)
-
-data = np.random.randn(200, 2)
-fitted = fit_copula_to_data(data, copula_type="gaussian", method="rank")
-```
-
-Reproducibility is per-call (`np.random.default_rng(random_state)`), not global `np.random.seed` mutation — the mistake the audit removed.
-
-## Mixtures: EM that does not lie about convergence
-
-A mixture is `∑ wᵢ · pᵢ(x)`. The naive EM bug is checking convergence before the M-step and returning stale weights. probviz checks after the M-step, with guards for empty data, `n_components > n`, zero row-likelihoods, zero counts, and zero variance, plus a local RNG.
-
-```python
-from src.distributions.mixtures import MixtureDistribution
-from src.distributions.continuous import NormalDistribution
-import numpy as np
-
-mix = MixtureDistribution(
-    components=[NormalDistribution(mu=-2, sigma=1), NormalDistribution(mu=2, sigma=1)],
-    weights=[0.5, 0.5],
-)
-mix.pdf(0.0)
-mix.rvs(size=1000, random_state=0).shape  # (1000,)
-
-# Or discover components from data:
-from src.distributions.mixtures import GaussianMixtureModel, select_optimal_components
-
-gmm = GaussianMixtureModel(n_components=2)
-gmm.fit(data)
-gmm.bic(data), gmm.aic(data)
-select_optimal_components(data, max_components=6)  # BIC sweep → optimal k
-```
-
-<Mermaid label="Fig 3" caption="EM in one picture: responsibilities (E-step), then weights/means/stds (M-step), then convergence — never the reverse." chart={`
-flowchart TB
-  INIT["init: random pick<br/>without replacement"] --> E["E-step<br/>r_ik = w_k pdf_k(x_i) / sum"]
-  E --> M["M-step<br/>w, μ, σ from r"]
-  M --> C{"Δ log-lik < tol?"}
-  C -->|no| E
-  C -->|yes| OUT["return w, μ, σ, R"]
-`} />
-
-## Fitting and model selection without hand-waving
-
-`DistributionFitter` tries up to 10 laws (`norm`, `expon`, `gamma`, `beta`, `lognorm`, `weibull_min`, `t`, `chi2`, `uniform`, `cauchy`), fits each by MLE via `dist.fit`, and ranks by `AIC = 2k − 2LL` and `BIC = k log n − 2LL` with a KS `kstest` column. `BayesianEstimator` gives conjugate posteriors (Normal mean/variance, Poisson rate, Bernoulli p) and `GoodnessOfFit` wraps chi-square, KS, Anderson-Darling, Shapiro-Wilk, and Jarque-Bera with the SciPy 1.17 `method="interpolate"` nuance handled.
-
-```python
-from src.fitting.distribution_fitter import DistributionFitter
-import numpy as np
-
-data = np.random.gamma(shape=2, scale=2, size=500)
-fitter = DistributionFitter(data)
-table = fitter.fit_all()          # sorted by AIC, with KS p-values
-best = table.iloc[0].name
-
-# Bayesian update: prior N(0,1), known variance 1
-from src.fitting.distribution_fitter import BayesianEstimator
-post_mean, post_var = BayesianEstimator(data).estimate_normal_mean(
-    prior_mean=0, prior_var=1, known_variance=1
-)
-```
-
-The ranking is the point. Seeing Gamma beat Lognormal by 12 AIC on your actual data teaches more than any textbook table.
-
-## Monte Carlo that is honest about variance
-
-`MonteCarloSimulator` is seven methods around one loop — `simulate`, `estimate_probability` (Wilson interval), `estimate_expectation`, `importance_sampling` (with `ESS = (∑w)²/∑w²`), `stratified_sampling`, `bootstrap`, `permutation_test` — plus `VarianceReduction` (antithetic variates, control variates with optimal `β = Cov/Var`) and `QuasiMonteCarloSimulator` (Halton van der Corput, Sobol via `scipy.stats.qmc`).
-
-```python
-from src.monte_carlo.simulator import MonteCarloSimulator, VarianceReduction
-
-sim = MonteCarloSimulator(random_seed=0)
-res = sim.simulate(lambda: np.random.randn(), num_samples=10000, confidence_level=0.95)
-res.mean, res.confidence_interval, res.quantiles[0.95]
-
-# Variance reduction: antithetic pairs cut variance without more samples
-mean, se = VarianceReduction.antithetic_variates(
-    sampler=lambda n: np.random.rand(n),
-    func=lambda x: np.exp(x),
-    num_pairs=5000,
-)
-```
-
-<Bars label="Fig 4" caption="Measured test mix that backs the whole stack — 694 tests, with distributions and utils carrying the weight." bars={[
-  { label: "distributions", value: 144, display: "144" },
-  { label: "utils", value: 117, display: "117" },
-  { label: "plotting", value: 86, display: "86" },
-  { label: "stat tests", value: 84, display: "84" },
-  { label: "multivariate", value: 67, display: "67" },
-  { label: "copulas", value: 50, display: "50", accent: true },
-]} max={150} />
-
-## Statistical tests that return dictionaries, not mysteries
-
-Thirteen dict-returning helpers, JSON-friendly by design: `t_test`, `chi_square_test`, `anova`, `correlation_test`, `normality_tests` (consensus >50%), plus nonparametric `mann_whitney_u`, `wilcoxon_signed_rank`, `kruskal_wallis`, `friedman_test`, and descriptive `describe`/`quantile_summary`/`outlier_detection`/`correlation_matrix`. Each returns `p_value`, `reject_null`, and an `interpretation` string you can log without unpacking a SciPy result object.
-
-```python
-from src.statistical_tests.hypothesis_tests import t_test, normality_tests
-from src.statistical_tests.descriptive import describe
-
-a = np.random.normal(0, 1, 100)
-b = np.random.normal(0.2, 1, 100)
-t_test(a, b, alternative="two-sided")  # {'statistic','p_value','reject_null',...}
-describe(a)  # count, mean, std, se, cv, iqr, skewness, kurtosis, ...
-normality_tests(a)["consensus"]  # Likely normal if <50% of tests reject
-```
-
-## The explorer: one page, 16 distributions, no tabs for the advanced part
-
-The Streamlit app at `web/app.py` is intentionally single-page + sidebar, not a tab farm. The sidebar is the only control surface: *Continuous vs Discrete* → distribution picker → sliders built from `get_parameters`/`get_parameter_bounds` → visualization toggles. The main column renders current parameters, four headline statistics (`Mean`, `Variance`, `Std Dev`, `Median`), three more (`Mode`, `Skewness`, `Excess Kurtosis`), and two cached plots — `plot_pdf_pmf` (Plotly Viridis bar / filled scatter with a red mean, green median) and `plot_cdf` — plus an optional large-sample histogram, a five-quantile row (`5, 25, 50, 75, 95` via `ppf`), and structured logging with a `correlation_id` per page view.
-
-The honest footnote the docs repeat: the Streamlit explorer covers the 16 univariate distributions only. Multivariate, copulas, mixtures, fitting, Monte Carlo, and the test suite are Python-API only — the gallery GIFs (`normal_sigma_morph`, `clt_convergence`, `copula_dependence`, `beta_shape_morph`, `mixture_separation`, regenerable via `examples/generate_media.py`) are the pictures for those modules.
-
-<Figure label="Fig 5" caption="The app is one page and one sidebar — parameters live on the left, pictures and numbers live on the right, and nothing advanced hides behind a tab.">
-
-```python
-# Every plot in the stack returns (fig, ax) and never calls plt.show().
-from src.visualizers import plot_pdf, plot_cdf, plot_comparison
-from src.distributions.continuous import NormalDistribution
-import matplotlib.pyplot as plt
-
-n = NormalDistribution(mu=0, sigma=1)
-fig, ax = plot_pdf(n)                # infers grid from support
-fig, ax = plot_cdf(n, num_points=200)
-fig, ax = plot_comparison([n, NormalDistribution(mu=1, sigma=0.8)])
-plt.close(fig)
-```
-
-</Figure>
-
-## Engineering that keeps it publishable
-
-The library is `src`-layout, `setuptools`/`wheel`, `probviz` on PyPI `1.0.3` (`Python ≥3.10`, classifiers `3.10|3.11|3.12`), 10 runtime deps (`numpy`, `scipy`, `pandas`, `matplotlib`, `seaborn`, `plotly`, `streamlit`, `scikit-learn`, `statsmodels`, `joblib`), entry point `probviz = src.cli:main`, sdist/wheel shipping `src`+`web`+`tests` so `probviz test` works from a pip install. The CLI forwards `probviz app --server.port 8501` untouched (`parse_known_args` + `REMAINDER`, order preserved in `1.0.3`), locates `web/app.py` via `import web`, and `probviz test` degrades gracefully with `pip install "probviz[test]"`.
-
-<Mermaid label="Fig 6" caption="What probviz is and is not — one surface for 16 univariate, Python API for everything else." chart={`
-flowchart TB
-  U["16 univariate<br/>app + API"] --> API["typed API<br/>pdf/cdf/ppf/rvs"]
-  M["multivariate<br/>4 laws"] --> API
-  C["copulas<br/>4 + fitter"] --> API
-  X["mixtures<br/>EM + sklearn GMM"] --> API
-  F["fitting<br/>MLE/AIC/BIC + Bayes"] --> API
-  Q["Monte Carlo<br/>+ variance reduction"] --> API
-  S["stat tests<br/>13 helpers"] --> API
-  API --> V["visualizers<br/>(fig, ax) never show"]
-  V --> APP["Streamlit<br/>single page"]
-  APP --> CLI["probviz app/test/version"]
-`} />
-
-Quality is gated, not asserted: `ruff` `E,F,I,W,B,UP` + `black --check 100` + `isort` + `mypy --python-version $MATRIX` + `pytest --cov --cov-fail-under=80`, matrix `3.10|3.11|3.12` plus `pip-audit` and a Docker multi-stage build (`python:3.11-slim`, `appuser`, `HEALTHCHECK curl /_stcore/health`). Docs are MkDocs Material (`mkdocs.yml`) with 14 pages and `mkdocstrings` auto-API, deployed to Pages; `CITATION.cff` + BibTeX and `LICENSE MIT` are in the repo root.
-
-The five GIFs in the README and docs are not decoration. Each is produced by `examples/generate_media.py` so the picture you see is the picture the code makes.
-
-## Try the loop yourself
+The shortest way to try it is deliberately short:
 
 ```bash
 pip install probviz
-python - << 'PY'
-from src.distributions.continuous import GammaDistribution
-from src.fitting.distribution_fitter import DistributionFitter
-from src.monte_carlo.simulator import MonteCarloSimulator
-import numpy as np
-
-# 1. look
-g = GammaDistribution(shape=2, scale=2)
-print(g.pdf(2.0), g.mean(), g.var())
-
-# 2. sample and test
-data = g.rvs(size=200, random_state=0)
-print(DistributionFitter(data).fit_all().head(3)[["aic","bic"]])
-
-# 3. Monte Carlo the thing the copula cdfs refuse to give you
-sim = MonteCarloSimulator(random_seed=0)
-print(sim.estimate_probability(lambda: np.random.rand() < 0.3, num_samples=10000))
-PY
-
-probviz app --server.port 8501   # drag α, β, watch the Beta morph live
+probviz app
 ```
 
-If you want the deep end, `src/distributions/copulas.py:503`, `src/distributions/multivariate.py:530`, and `src/distributions/mixtures.py:490` are where dependence, conditioning, and EM live block by block. The 694 tests are the map — `tests/test_distributions.py:144`, `tests/test_utils.py:117`, `tests/test_copulas.py:50` — and the [API reference](https://sanskarpan.github.io/probviz/api/) is the glossary.
+The app starts on port `8501`. For the test extras:
 
-The thesis is simple: a distribution is something you should be able to *see*, not just evaluate. probviz is the from-scratch way I made that true for myself — 16 univariate laws you can drag, plus the multivariate, copula, mixture, fitting, Monte Carlo, and testing toolkits that let you stop admiring the shape and start asking whether your data has it. The [code is on GitHub](https://github.com/sanskarpan/probviz), the [docs are live](https://sanskarpan.github.io/probviz/), and `pip install probviz` is the one-liner that puts the whole loop on your machine. Next I want to wire the app's server side through the Monte Carlo layer so the histogram you drag is itself a variance-reduced estimator — fewer samples, same picture, less waiting.
+```bash
+pip install "probviz[test]"
+probviz test
+```
 
+That second command runs the same suite that protects the release. The current package is `probviz 1.0.3` and the suite contains 694 passing tests across Python 3.10, 3.11, and 3.12.
+
+## Start with a shape, not a formula
+
+The first thing the app should do is make a parameter feel physical. Increase the standard deviation of a normal distribution and the curve gets wider and lower. Decrease it and probability gathers around the mean. The formula has not changed; the relationship between its parameters and its shape has become visible.
+
+<Figure label="Fig 1" caption="The normal distribution as its standard deviation changes. The GIF is generated from probviz, not a hand-drawn illustration.">
+  <img class="probviz-gif" src="/probviz/normal_sigma_morph.gif" alt="Animated normal distributions becoming wider and flatter as sigma increases" width="720" height="405" loading="eager" />
+</Figure>
+
+For a normal distribution with mean <math class="equation-inline"><mi>μ</mi></math> and standard deviation <math class="equation-inline"><mi>σ</mi></math>, the density is:
+
+<div class="equation" role="img" aria-label="The normal probability density function">
+  <math display="block">
+    <mi>f</mi><mo>(</mo><mi>x</mi><mo>)</mo><mo>=</mo>
+    <mfrac>
+      <mn>1</mn>
+      <mrow><mi>σ</mi><msqrt><mn>2</mn><mi>π</mi></msqrt></mrow>
+    </mfrac>
+    <msup><mi>e</mi><mrow><mo>−</mo><mfrac><msup><mrow><mo>(</mo><mi>x</mi><mo>−</mo><mi>μ</mi><mo>)</mo></mrow><mn>2</mn></msup><mrow><mn>2</mn><msup><mi>σ</mi><mn>2</mn></msup></mrow></mfrac></mrow></msup>
+  </math>
+  <span class="equation__caption">Normal density: μ controls location; σ controls spread.</span>
+</div>
+
+The point of rendering the equation as mathematics rather than putting a string of special characters in a paragraph is not decoration. Fractions, superscripts, and grouping should carry meaning at a glance. The article uses native MathML for displayed equations, with readable text alternatives for screen readers and browsers that do not expose a math layout engine.
+
+## Sixteen distributions, one contract
+
+The library starts with 16 univariate distributions: 10 continuous and 6 discrete. Each is a small validated wrapper around a frozen SciPy distribution. The wrapper gives them the same useful vocabulary: `pdf`, `cdf`, `ppf`, `rvs`, `mean`, `var`, `median`, `mode`, `entropy`, `support`, and `interval`.
+
+```python
+from src.distributions.continuous import NormalDistribution
+
+normal = NormalDistribution(mu=0, sigma=1)
+
+print(normal.pdf(0))
+print(normal.cdf(1.96))
+print(normal.ppf(0.5))
+print(normal.rvs(size=1_000, random_state=0).mean())
+```
+
+The parameter layer matters as much as the plotting layer. A slider must not be able to create `sigma = 0`, an invalid beta shape, or a uniform distribution whose upper endpoint comes before its lower endpoint. Every class exposes `get_parameters()`, `get_parameter_bounds()`, and `set_parameters()` so the app can build its controls from the distribution itself rather than maintaining a second, drifting registry of rules.
+
+The continuous set is Normal, Exponential, Uniform, Beta, Gamma, Chi-Square, Student-t, Weibull, Lognormal, and Cauchy. The discrete set is Binomial, Poisson, Geometric, Negative Binomial, Hypergeometric, and Discrete Uniform. A discrete distribution's `pdf` dispatches to its PMF, so the public call still works while the plot can use bars instead of pretending a count distribution is smooth.
+
+## Shape has more than one parameter
+
+The beta distribution is a good test of whether a visualizer is doing anything useful. Its support stays fixed at the interval from zero to one, but its two shape parameters can produce a uniform-looking curve, a central peak, a skewed tail, or mass pressed against a boundary.
+
+<Figure label="Fig 2" caption="The beta distribution keeps the same support while α and β move probability toward the centre or either boundary.">
+  <img class="probviz-gif" src="/probviz/beta_shape_morph.gif" alt="Animated beta distributions changing shape as alpha and beta vary" width="720" height="405" loading="lazy" />
+</Figure>
+
+The beta density is more legible when its normalising constant is separated from its shape terms:
+
+<div class="equation" role="img" aria-label="The beta probability density function">
+  <math display="block">
+    <mi>f</mi><mo>(</mo><mi>x</mi><mo>;</mo><mi>α</mi><mo>,</mo><mi>β</mi><mo>)</mo><mo>=</mo>
+    <mfrac>
+      <mrow><msup><mi>x</mi><mrow><mi>α</mi><mo>−</mo><mn>1</mn></mrow></msup><msup><mrow><mo>(</mo><mn>1</mn><mo>−</mo><mi>x</mi><mo>)</mo></mrow><mrow><mi>β</mi><mo>−</mo><mn>1</mn></mrow></msup></mrow>
+      <mrow><mi>B</mi><mo>(</mo><mi>α</mi><mo>,</mo><mi>β</mi><mo>)</mo></mrow>
+    </mfrac>
+    <mo>,</mo><mspace width="1em"/><mn>0</mn><mo>≤</mo><mi>x</mi><mo>≤</mo><mn>1</mn>
+  </math>
+  <span class="equation__caption">Beta density: α and β change shape; the support remains [0, 1].</span>
+</div>
+
+This is also why the app keeps statistics beside the plot. A curve can look “more concentrated” while its mean stays fixed, or move its mean while its variance changes in a less obvious way. The app renders mean, variance, standard deviation, median, mode, skewness, and excess kurtosis together, then exposes quantiles through `ppf`.
+
+## Sampling is where the picture gets tested
+
+The curve is theoretical. A sample is noisy. The central limit theorem is the bridge between them: take independent observations with finite variance, average more of them, and the distribution of those averages approaches a normal law.
+
+<Figure label="Fig 3" caption="The central limit effect: individual samples remain noisy, while the distribution of their means settles into a normal shape as the sample size grows.">
+  <img class="probviz-gif" src="/probviz/clt_convergence.gif" alt="Animated histograms showing sample means converging toward a normal distribution" width="720" height="405" loading="lazy" />
+</Figure>
+
+The library keeps random generation explicit and reproducible:
+
+```python
+from src.distributions.continuous import GammaDistribution
+
+gamma = GammaDistribution(shape=2, scale=2)
+sample = gamma.rvs(size=10_000, random_state=7)
+
+print(sample.mean())
+print(gamma.mean())
+```
+
+The `random_state` belongs to the call. Sampling one distribution should not silently reseed a different part of a notebook or test process. That local-RNG rule was one of the changes made during the production audit: copulas, mixture fitting, and multivariate samplers use local generators rather than mutating NumPy's global random state.
+
+## Dependence is invisible in a marginal
+
+Two variables can have perfectly ordinary one-dimensional distributions and still have an interesting joint structure. A scatter plot reveals that structure, but a pair of marginals does not. Copulas provide a way to model the dependence separately from the marginals.
+
+<Figure label="Fig 4" caption="A Gaussian copula changes the dependence between uniform marginals while keeping each marginal uniform. The colour and point cloud make correlation visible.">
+  <img class="probviz-gif" src="/probviz/copula_dependence.gif" alt="Animated copula samples changing from weak to strong dependence" width="720" height="405" loading="lazy" />
+</Figure>
+
+The fitting path is rank-based: turn observations into pseudo-observations, estimate dependence, then sample in the unit square. In mathematical form, the Gaussian copula density is:
+
+<div class="equation" role="img" aria-label="The Gaussian copula density using a correlation matrix Sigma">
+  <math display="block">
+    <mi>c</mi><mo>(</mo><mi>u</mi><mo>)</mo><mo>=</mo>
+    <mfrac>
+      <mn>1</mn>
+      <msqrt><mo>|</mo><mi>Σ</mi><mo>|</mo></msqrt>
+    </mfrac>
+    <msup><mi>e</mi><mrow><mo>−</mo><mfrac><mn>1</mn><mn>2</mn></mfrac><msup><mi>z</mi><mi>T</mi></msup><mo>(</mo><msup><mi>Σ</mi><mrow><mo>−</mo><mn>1</mn></mrow></msup><mo>−</mo><mi>I</mi><mo>)</mo><mi>z</mi></mrow></msup>
+  </math>
+  <span class="equation__caption">Here z is the component-wise normal quantile of u.</span>
+</div>
+
+```python
+import numpy as np
+from src.distributions.copulas import GaussianCopula
+
+correlation = np.array([[1.0, 0.75], [0.75, 1.0]])
+copula = GaussianCopula(correlation=correlation)
+
+u = copula.rvs(n_samples=2_000, random_state=0)
+print(u.shape)
+print(u.min(), u.max())
+```
+
+probviz includes Gaussian, Clayton, Gumbel, and Student-t copulas. The limitations are intentional and visible in the API: Clayton and Gumbel density and sampling methods are bivariate-only; the Student-t copula exposes sampling while its density and CDF explicitly direct users toward Monte Carlo. A limitation that raises clearly is more useful than an implementation that returns a plausible-looking wrong answer.
+
+## Mixtures: when one curve is not enough
+
+If a dataset contains two populations, fitting one normal distribution can hide the structure. A mixture represents several component distributions and weights their densities:
+
+<div class="equation" role="img" aria-label="A mixture density is the weighted sum of component densities">
+  <math display="block">
+    <mi>p</mi><mo>(</mo><mi>x</mi><mo>)</mo><mo>=</mo>
+    <munderover><mo>∑</mo><mrow><mi>k</mi><mo>=</mo><mn>1</mn></mrow><mi>K</mi></munderover>
+    <msub><mi>w</mi><mi>k</mi></msub><msub><mi>p</mi><mi>k</mi></msub><mo>(</mo><mi>x</mi><mo>)</mo>
+    <mo>,</mo><mspace width="1em"/><munderover><mo>∑</mo><mrow><mi>k</mi><mo>=</mo><mn>1</mn></mrow><mi>K</mi></munderover><msub><mi>w</mi><mi>k</mi></msub><mo>=</mo><mn>1</mn>
+  </math>
+  <span class="equation__caption">Each component contributes according to its non-negative weight.</span>
+</div>
+
+<Figure label="Fig 5" caption="A two-component mixture separates overlapping populations. The changing component means and weights are generated by the library's mixture examples.">
+  <img class="probviz-gif" src="/probviz/mixture_separation.gif" alt="Animated Gaussian mixture components separating into two peaks" width="720" height="405" loading="lazy" />
+</Figure>
+
+The implementation includes a one-dimensional EM fitter, a scikit-learn Gaussian-mixture wrapper, Bayesian GMM, and BIC-based component selection. The EM implementation is guarded at the places where numerical examples usually become production bugs: empty data, too many components, zero row likelihoods, zero component counts, and zero variance. Most importantly, convergence is checked after the M-step, so the returned parameters describe the likelihood value that actually converged.
+
+```python
+import numpy as np
+from src.distributions.mixtures import GaussianMixtureModel
+
+rng = np.random.default_rng(4)
+data = np.concatenate([
+    rng.normal(-2, 0.6, 300),
+    rng.normal(2, 0.8, 300),
+])
+
+model = GaussianMixtureModel(n_components=2)
+model.fit(data)
+
+print(model.get_parameters())
+print(model.bic(data))
+```
+
+The distinction between the hand-written EM path and the sklearn model is useful. The first makes the algorithm and its failure modes inspectable. The second gives a production-grade multivariate estimator. They share the same idea, not the same abstraction.
+
+## From a picture back to data
+
+Visualization becomes analysis when it can answer “which model describes this sample?” `DistributionFitter` tries ten candidate laws — normal, exponential, gamma, beta, lognormal, Weibull, Student-t, chi-square, uniform, and Cauchy — using maximum likelihood. It reports log likelihood, AIC, BIC, and a KS statistic, then sorts the results by AIC.
+
+```python
+import numpy as np
+from src.fitting.distribution_fitter import DistributionFitter
+
+data = np.random.default_rng(12).gamma(shape=2, scale=2, size=500)
+fitted = DistributionFitter(data).fit_all()
+
+best_name, best_result = next(iter(fitted.items()))
+print(best_name)
+print(best_result["aic"], best_result["bic"])
+```
+
+The output is a regular dictionary instead of an opaque library-specific result object. That makes it easy to log, serialize, compare, or put behind an API. `BayesianEstimator` adds conjugate updates for normal means and variances, Poisson rates, and Bernoulli probabilities. `GoodnessOfFit` wraps chi-square, KS, Anderson-Darling, Shapiro-Wilk, and Jarque-Bera tests.
+
+## Monte Carlo is an uncertainty tool
+
+Monte Carlo is often introduced as “draw many samples and average them.” The average is only half the answer. The other half is how uncertain that estimate is and how quickly it stabilises. `MonteCarloSimulator` returns samples, summary statistics, quantiles, a confidence interval, and optional convergence data. Its probability estimator uses a Wilson interval rather than a symmetric interval that can wander below zero or above one.
+
+The library also includes importance sampling, stratified sampling, bootstrap, permutation tests, antithetic variates, control variates, Halton sequences, and Sobol sequences. The expectation formula is simple:
+
+<div class="equation" role="img" aria-label="The Monte Carlo estimate of an expectation is the average of function values">
+  <math display="block">
+    <mover><mi>E</mi><mo>^</mo></mover><mo>[</mo><mi>g</mi><mo>(</mo><mi>X</mi><mo>)</mo><mo>]</mo><mo>=</mo>
+    <mfrac><mn>1</mn><mi>n</mi></mfrac>
+    <munderover><mo>∑</mo><mrow><mi>i</mi><mo>=</mo><mn>1</mn></mrow><mi>n</mi></munderover>
+    <mi>g</mi><mo>(</mo><msub><mi>X</mi><mi>i</mi></msub><mo>)</mo>
+  </math>
+  <span class="equation__caption">More samples reduce noise, but variance reduction can reduce the noise per sample.</span>
+</div>
+
+```python
+from src.monte_carlo.simulator import MonteCarloSimulator
+
+simulator = MonteCarloSimulator(random_seed=0)
+result = simulator.simulate(
+    lambda: np.random.normal(),
+    num_samples=10_000,
+    track_convergence=True,
+)
+
+print(result.mean)
+print(result.confidence_interval)
+```
+
+The private `_rng` in that small example is only there to make the source of randomness explicit. In application code, pass a public random function or distribution sampler. The important point is that an estimate should arrive with its uncertainty, not just a number with too many decimal places.
+
+## The app is a laboratory, not a dashboard
+
+The Streamlit app is deliberately one page with a sidebar. The sidebar chooses continuous or discrete distributions, creates parameter controls from the distribution's own bounds, and exposes PDF/PMF, CDF, and sample toggles. The main page places statistics, plots, quantiles, and an optional sample histogram beside one another.
+
+That layout is intentional. A dashboard encourages scanning. A laboratory encourages changing one thing and watching what responds. Move a parameter, compare the curve with its CDF, turn on samples, and then ask whether the empirical mean and quantiles are behaving as the theory predicts.
+
+The app covers the 16 univariate distributions. The advanced modules remain a Python API: multivariate distributions, copulas, mixtures, fitting, Monte Carlo, and statistical tests. That boundary is documented rather than hidden behind half-finished UI controls.
+
+For notebooks and applications, the visualizer functions return figures instead of displaying them:
+
+```python
+from src.distributions.continuous import NormalDistribution
+from src.visualizers import plot_cdf, plot_comparison, plot_pdf
+
+normal = NormalDistribution(mu=0, sigma=1)
+fig, ax = plot_pdf(normal)
+fig, ax = plot_cdf(normal, num_points=250)
+fig, ax = plot_comparison([normal, NormalDistribution(mu=1, sigma=0.8)])
+```
+
+No helper calls `plt.show()`. You can embed the returned figure, add annotations, save it, or close it when a web request is finished.
+
+## Quality is part of the feature
+
+The project began as a visual experiment and ended with the quality gates of a library. The release is built as a wheel and source distribution. The CLI is `probviz app`, `probviz test`, and `probviz version`. The package ships `src`, `web`, and `tests`, so an installed copy can run its own suite when the test extras are installed.
+
+<Bars label="Fig 6" caption="The release is tested across the places where probability code tends to break: distribution semantics, numerical utilities, plots, statistical results, and multivariate behavior. The full suite contains 694 passing tests." bars={[
+  { label: "distributions", value: 144, display: "144" },
+  { label: "utils", value: 117, display: "117" },
+  { label: "plotting", value: 86, display: "86" },
+  { label: "statistical tests", value: 84, display: "84" },
+  { label: "multivariate", value: 67, display: "67", accent: true },
+  { label: "copulas", value: 50, display: "50" },
+]} max={150} />
+
+Every push runs Ruff, Black, isort, mypy, the test suite with an 80 percent coverage gate, a dependency audit, a Docker build, and a documentation build. The matrix covers Python 3.10, 3.11, and 3.12. The five GIFs in this article are generated by `examples/generate_media.py`; they are outputs of the project, not stock assets.
+
+<Mermaid label="Fig 7" caption="The complete path from a probability law to something a person can inspect, sample, fit, and reuse." chart={`
+flowchart LR
+  LAW["distribution law"] --> API["typed Python API"]
+  API --> VIEW["PDF / CDF / quantiles"]
+  API --> SAMPLE["reproducible samples"]
+  SAMPLE --> FIT["fit and test data"]
+  VIEW --> APP["Streamlit explorer"]
+  FIT --> APP
+  API --> EXT["notebook / service / test"]
+`} />
+
+## Try the whole loop
+
+Install the library:
+
+```bash
+pip install probviz
+```
+
+Open the explorer:
+
+```bash
+probviz app --server.port 8501
+```
+
+Use the API from a notebook or script:
+
+```python
+import numpy as np
+from src.distributions.continuous import GammaDistribution
+from src.fitting.distribution_fitter import DistributionFitter
+
+distribution = GammaDistribution(shape=2, scale=2)
+observations = distribution.rvs(size=200, random_state=0)
+
+print("theoretical mean:", distribution.mean())
+print("sample mean:", observations.mean())
+
+fits = DistributionFitter(observations).fit_all()
+print("best candidate:", next(iter(fits)))
+```
+
+Then install the test extras and run the fixtures yourself:
+
+```bash
+pip install "probviz[test]"
+probviz test
+```
+
+The project is not a replacement for SciPy, and the Streamlit page is not a general-purpose statistical workbench. It is a coherent surface over a set of probability ideas that are usually separated: distributions, dependence, samples, fitting, uncertainty, and tests. Its value is the connection between them.
+
+The thesis is simple: a distribution should be something you can see, perturb, sample from, fit, and question. That is what I tried to make `probviz` — a library you can import, an app you can drag, and a set of figures that make the mathematics harder to misunderstand.
+
+The [package is on PyPI](https://pypi.org/project/probviz/), the [source is on GitHub](https://github.com/sanskarpan/probviz), and the [API documentation is live](https://sanskarpan.github.io/probviz/). Start with `pip install probviz`, move a slider, and see whether the picture agrees with the formula.
