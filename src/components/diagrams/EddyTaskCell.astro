@@ -1,0 +1,29 @@
+---
+---
+<svg class="dgm eddy-task-cell" viewBox="0 0 860 365" role="img" aria-label="An eddy task is one allocation containing a header, future state, and trailer. Its atomic state packs a 48-bit reference count with 16 flag bits including running, complete, notified, and cancelled.">
+  <text x="24" y="28" class="dgm-sub">ONE ALLOCATION · CELL&lt;F, S&gt;</text>
+  <rect x="24" y="48" width="812" height="68" rx="8" class="dgm-box dgm-box--accent" />
+  <rect x="40" y="64" width="420" height="36" rx="4" class="dgm-box" />
+  <rect x="460" y="64" width="360" height="36" rx="4" class="dgm-box dgm-box--accent" />
+  <text x="250" y="87" text-anchor="middle" class="dgm-label">refcount · 48 bits</text>
+  <text x="640" y="87" text-anchor="middle" class="dgm-label">flags · 16 bits</text>
+  <text x="482" y="136" class="dgm-sub">RUNNING</text>
+  <text x="560" y="136" class="dgm-sub">COMPLETE</text>
+  <text x="652" y="136" class="dgm-sub dgm-sub--accent">NOTIFIED</text>
+  <text x="747" y="136" class="dgm-sub">CANCELLED</text>
+  <path d="M126 150v28M430 150v28M734 150v28" class="dgm-line" />
+  <rect x="24" y="178" width="204" height="102" rx="8" class="dgm-box" />
+  <text x="126" y="207" text-anchor="middle" class="dgm-title">Header</text>
+  <text x="126" y="230" text-anchor="middle" class="dgm-sub">state · vtable</text>
+  <text x="126" y="249" text-anchor="middle" class="dgm-sub">owner · queue link</text>
+  <rect x="328" y="178" width="204" height="102" rx="8" class="dgm-box dgm-box--accent" />
+  <text x="430" y="207" text-anchor="middle" class="dgm-title">Core&lt;F, S&gt;</text>
+  <text x="430" y="230" text-anchor="middle" class="dgm-sub">Running(future)</text>
+  <text x="430" y="249" text-anchor="middle" class="dgm-sub">Finished(output)</text>
+  <rect x="632" y="178" width="204" height="102" rx="8" class="dgm-box" />
+  <text x="734" y="207" text-anchor="middle" class="dgm-title">Trailer</text>
+  <text x="734" y="230" text-anchor="middle" class="dgm-sub">join waker</text>
+  <text x="734" y="249" text-anchor="middle" class="dgm-sub">output handoff</text>
+  <path d="M126 280v32h604v-32" fill="none" class="dgm-line dgm-line--accent" />
+  <text x="430" y="337" text-anchor="middle" class="dgm-sub dgm-sub--accent">queue reference · join handle · waker clones all point at the same cell</text>
+</svg>

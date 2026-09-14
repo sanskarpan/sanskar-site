@@ -1,0 +1,12 @@
+---
+---
+<svg class="dgm eddy-evidence" viewBox="0 0 860 320" role="img" aria-label="Eddy correctness evidence ladder: functional tests cover behavior, loom explores interleavings, Miri checks unsafe provenance, differential tests compare Tokio behavior, and platform stress tests cover kernels and architectures.">
+  <text x="24" y="28" class="dgm-sub">A GREEN TEST SUITE IS NOT ONE KIND OF EVIDENCE</text>
+  <path d="M82 273h696" class="dgm-line" />
+  <rect x="82" y="218" width="120" height="55" rx="7" class="dgm-box" /><text x="142" y="242" text-anchor="middle" class="dgm-label">functional</text><text x="142" y="260" text-anchor="middle" class="dgm-sub">API behavior</text>
+  <rect x="222" y="178" width="120" height="95" rx="7" class="dgm-box dgm-box--accent" /><text x="282" y="207" text-anchor="middle" class="dgm-label">loom</text><text x="282" y="227" text-anchor="middle" class="dgm-sub">wake races</text><text x="282" y="246" text-anchor="middle" class="dgm-sub">queue interleavings</text>
+  <rect x="362" y="139" width="120" height="134" rx="7" class="dgm-box" /><text x="422" y="168" text-anchor="middle" class="dgm-label">Miri</text><text x="422" y="188" text-anchor="middle" class="dgm-sub">provenance</text><text x="422" y="207" text-anchor="middle" class="dgm-sub">intrusive unsafe</text>
+  <rect x="502" y="99" width="120" height="174" rx="7" class="dgm-box dgm-box--accent" /><text x="562" y="128" text-anchor="middle" class="dgm-label">differential</text><text x="562" y="148" text-anchor="middle" class="dgm-sub">Tokio traces</text><text x="562" y="168" text-anchor="middle" class="dgm-sub">cancel properties</text><text x="562" y="188" text-anchor="middle" class="dgm-sub">soak + watchdog</text>
+  <rect x="642" y="58" width="120" height="215" rx="7" class="dgm-box" /><text x="702" y="87" text-anchor="middle" class="dgm-label">platforms</text><text x="702" y="107" text-anchor="middle" class="dgm-sub">Linux io_uring</text><text x="702" y="127" text-anchor="middle" class="dgm-sub">Windows IOCP</text><text x="702" y="147" text-anchor="middle" class="dgm-sub">ARM / QEMU</text><text x="702" y="167" text-anchor="middle" class="dgm-sub">sanitizers</text>
+  <text x="430" y="306" text-anchor="middle" class="dgm-sub dgm-sub--accent">each layer is aimed at a different way the runtime can be wrong</text>
+</svg>

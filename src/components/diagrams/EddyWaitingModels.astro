@@ -1,0 +1,29 @@
+---
+---
+<svg class="dgm eddy-waiting" viewBox="0 0 860 360" role="img" aria-label="Three operating systems expose different waiting models behind one eddy readiness interface: epoll reports readiness, kqueue merges read and write filters, and IOCP reports completions that eddy adapts into the same task wake path.">
+  <defs>
+    <marker id="ewm-arrow" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 10 5 0 10z" class="dgm-arrow" /></marker>
+  </defs>
+  <text x="24" y="28" class="dgm-sub">ONE TASK CONTRACT · THREE KERNEL DIALECTS</text>
+  <rect x="24" y="57" width="248" height="170" rx="9" class="dgm-box" />
+  <text x="148" y="87" text-anchor="middle" class="dgm-title">Linux · epoll</text>
+  <text x="148" y="115" text-anchor="middle" class="dgm-sub">level-triggered readiness</text>
+  <rect x="60" y="139" width="176" height="42" rx="6" class="dgm-box dgm-box--accent" />
+  <text x="148" y="165" text-anchor="middle" class="dgm-label">fd → token → Ready</text>
+  <text x="148" y="207" text-anchor="middle" class="dgm-sub">eventfd wakes the driver</text>
+  <rect x="306" y="57" width="248" height="170" rx="9" class="dgm-box" />
+  <text x="430" y="87" text-anchor="middle" class="dgm-title">BSD/macOS · kqueue</text>
+  <text x="430" y="115" text-anchor="middle" class="dgm-sub">read/write filters merged</text>
+  <rect x="342" y="139" width="176" height="42" rx="6" class="dgm-box dgm-box--accent" />
+  <text x="430" y="165" text-anchor="middle" class="dgm-label">fd → token → Ready</text>
+  <text x="430" y="207" text-anchor="middle" class="dgm-sub">EVFILT_USER wakes driver</text>
+  <rect x="588" y="57" width="248" height="170" rx="9" class="dgm-box" />
+  <text x="712" y="87" text-anchor="middle" class="dgm-title">Windows · IOCP</text>
+  <text x="712" y="115" text-anchor="middle" class="dgm-sub">completion packets</text>
+  <rect x="624" y="139" width="176" height="42" rx="6" class="dgm-box dgm-box--accent" />
+  <text x="712" y="165" text-anchor="middle" class="dgm-label">packet → token → Ready</text>
+  <text x="712" y="207" text-anchor="middle" class="dgm-sub">posted packet wakes driver</text>
+  <path d="M148 227v58h564v-58" fill="none" class="dgm-line dgm-line--accent" marker-end="url(#ewm-arrow)" />
+  <rect x="294" y="286" width="272" height="44" rx="7" class="dgm-box dgm-box--accent" />
+  <text x="430" y="313" text-anchor="middle" class="dgm-label">ScheduledIo → Waker → queue</text>
+</svg>

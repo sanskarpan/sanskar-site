@@ -1,0 +1,31 @@
+---
+---
+<svg class="dgm eddy-observability" viewBox="0 0 860 420" role="img" aria-label="Eddy's observability console turns one event stream into four views: task swimlanes, worker queue heatmap, wake causality graph, and poll-duration distribution.">
+  <text x="24" y="28" class="dgm-sub">ONE EVENT STREAM · FOUR WAYS TO SEE STARVATION</text>
+  <rect x="24" y="53" width="812" height="320" rx="9" class="dgm-box" />
+  <text x="47" y="82" class="dgm-title">eddy-console / RuntimeEvent</text>
+  <text x="812" y="82" text-anchor="end" class="dgm-sub">Unix socket → TUI or WebSocket</text>
+  <line x1="47" y1="98" x2="813" y2="98" class="dgm-line" />
+  <rect x="48" y="120" width="370" height="100" rx="6" class="dgm-box dgm-box--accent" />
+  <text x="67" y="147" class="dgm-label">task lifecycle swimlanes</text>
+  <text x="67" y="171" class="dgm-sub">echo      idle ── queued ─ running ── idle</text>
+  <text x="67" y="192" class="dgm-sub">accept    idle ───── queued ─ running</text>
+  <text x="67" y="213" class="dgm-sub">timer     idle ───────────── fired</text>
+  <rect x="442" y="120" width="370" height="100" rx="6" class="dgm-box" />
+  <text x="461" y="147" class="dgm-label">worker queue heatmap</text>
+  <rect x="462" y="164" width="300" height="12" rx="3" fill="var(--paper-3)" /><rect x="462" y="164" width="245" height="12" rx="3" fill="var(--accent)" />
+  <rect x="462" y="185" width="300" height="12" rx="3" fill="var(--paper-3)" /><rect x="462" y="185" width="80" height="12" rx="3" fill="var(--ink-2)" />
+  <text x="772" y="174" class="dgm-sub">w0</text><text x="772" y="195" class="dgm-sub">w1</text>
+  <rect x="48" y="243" width="370" height="100" rx="6" class="dgm-box" />
+  <text x="67" y="270" class="dgm-label">wake causality</text>
+  <circle cx="108" cy="310" r="17" class="dgm-box dgm-box--accent" /><circle cx="220" cy="292" r="17" class="dgm-box" /><circle cx="328" cy="320" r="17" class="dgm-box" />
+  <path d="M125 305l77-13M237 298l74 18" class="dgm-line dgm-line--accent" />
+  <text x="108" y="314" text-anchor="middle" class="dgm-sub">I/O</text><text x="220" y="296" text-anchor="middle" class="dgm-sub">echo</text><text x="328" y="324" text-anchor="middle" class="dgm-sub">join</text>
+  <rect x="442" y="243" width="370" height="100" rx="6" class="dgm-box" />
+  <text x="461" y="270" class="dgm-label">poll duration distribution</text>
+  <line x1="474" y1="323" x2="784" y2="323" class="dgm-line" />
+  <path d="M482 316 C530 312 540 280 585 302 S650 317 674 281 S730 306 777 265" fill="none" class="dgm-line dgm-line--accent" />
+  <line x1="700" y1="282" x2="700" y2="323" class="dgm-line dgm-line--accent" stroke-dasharray="4 4" />
+  <text x="704" y="276" class="dgm-sub dgm-sub--accent">100ms warning</text>
+  <text x="430" y="404" text-anchor="middle" class="dgm-sub dgm-sub--accent">starvation stops being an intuition when it has a lane, an edge, and a queue depth</text>
+</svg>

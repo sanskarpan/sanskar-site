@@ -555,8 +555,9 @@ html.dark .astro-code span { color: var(--shiki-dark) !important; background: va
   margin-inline: auto;
   padding-inline: 1.5rem;
   align-items: start;
+  width: 100%;
 }
-.article-main { min-width: 0; }
+.article-main { min-width: 0; width: 100%; }
 .article-main .prose { max-width: none; }
 
 .article-rail { position: sticky; top: 4.6rem; align-self: start; }
@@ -586,7 +587,7 @@ html.dark .astro-code span { color: var(--shiki-dark) !important; background: va
 .toc__link.is-active { color: var(--ink); border-color: var(--accent); }
 
 @media (max-width: 1080px) {
-  .article-shell { grid-template-columns: min(40rem, 100%); justify-content: center; }
+  .article-shell { grid-template-columns: minmax(0, 40rem); justify-content: center; }
   .article-rail { display: none; }
 }
 
@@ -646,6 +647,9 @@ html.dark .astro-code span { color: var(--shiki-dark) !important; background: va
 
 /* ---------- Small-screen adaptations ---------- */
 @media (max-width: 640px) {
+  .article-shell { padding-inline: 1rem; }
+  .article__head, .prose { min-width: 0; max-width: 100%; }
+  .article__desc, .prose p, .prose li { overflow-wrap: anywhere; }
   /* keep diagrams legible: scroll instead of shrinking text to nothing */
   .figure__frame { overflow-x: auto; -webkit-overflow-scrolling: touch; }
   .dgm { min-width: 460px; }

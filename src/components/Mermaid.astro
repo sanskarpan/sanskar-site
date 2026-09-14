@@ -56,7 +56,15 @@ const { chart, caption, label } = Astro.props;
     clusterBorder: '#3a3226',
   };
 
-  function render() {
+  let rendering = false;
+  let renderAgain = false;
+
+  async function render() {
+    if (rendering) {
+      renderAgain = true;
+      return;
+    }
+    rendering = true;
     const isDark = document.documentElement.classList.contains('dark');
     mermaid.initialize({
       startOnLoad: false,
@@ -71,7 +79,15 @@ const { chart, caption, label } = Astro.props;
       else el.dataset.src = el.textContent || '';
       el.removeAttribute('data-processed');
     });
-    mermaid.run({ querySelector: 'pre.mermaid' });
+    try {
+      await mermaid.run({ querySelector: 'pre.mermaid' });
+    } finally {
+      rendering = false;
+      if (renderAgain) {
+        renderAgain = false;
+        render();
+      }
+    }
   }
 
   render();

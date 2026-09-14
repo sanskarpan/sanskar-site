@@ -1,0 +1,40 @@
+---
+---
+<svg class="dgm eddy-loop" viewBox="0 0 860 350" role="img" aria-label="The async runtime loop: an event wakes a task, the scheduler queues it, a worker polls it, and a pending future registers the next event. Rust provides the future and poll contract; eddy provides the executor, queues, drivers, and timers.">
+  <defs>
+    <marker id="erl-arrow" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 10 5 0 10z" class="dgm-arrow" /></marker>
+    <marker id="erl-accent-arrow" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 10 5 0 10z" class="erl-arrow-accent" /></marker>
+  </defs>
+  <text x="24" y="28" class="dgm-sub">WHAT RUST STOPS AT</text>
+  <rect x="24" y="45" width="245" height="86" rx="9" class="dgm-box" />
+  <text x="146" y="73" text-anchor="middle" class="dgm-title">Future::poll</text>
+  <text x="146" y="96" text-anchor="middle" class="dgm-sub">Ready(value) · Pending</text>
+  <text x="146" y="116" text-anchor="middle" class="dgm-sub">Context · Waker · Pin</text>
+  <path d="M269 88h54" class="dgm-line" marker-end="url(#erl-arrow)" />
+  <text x="296" y="75" text-anchor="middle" class="dgm-sub">the gap</text>
+  <rect x="326" y="45" width="510" height="86" rx="9" class="dgm-box dgm-box--accent" />
+  <text x="581" y="73" text-anchor="middle" class="dgm-title">eddy fills in the missing machine</text>
+  <text x="581" y="96" text-anchor="middle" class="dgm-sub">executor · queue · reactor · timer</text>
+  <text x="581" y="116" text-anchor="middle" class="dgm-sub">spawn · park · wake · complete</text>
+
+  <rect x="40" y="194" width="148" height="58" rx="8" class="dgm-box" />
+  <text x="114" y="219" text-anchor="middle" class="dgm-label">event</text>
+  <text x="114" y="238" text-anchor="middle" class="dgm-sub">socket · timer · channel</text>
+  <path d="M188 223h36" class="dgm-line dgm-line--accent" marker-end="url(#erl-accent-arrow)" />
+  <rect x="226" y="194" width="148" height="58" rx="8" class="dgm-box dgm-box--accent" />
+  <text x="300" y="219" text-anchor="middle" class="dgm-label">waker</text>
+  <text x="300" y="238" text-anchor="middle" class="dgm-sub">record NOTIFIED</text>
+  <path d="M374 223h36" class="dgm-line dgm-line--accent" marker-end="url(#erl-accent-arrow)" />
+  <rect x="412" y="194" width="148" height="58" rx="8" class="dgm-box" />
+  <text x="486" y="219" text-anchor="middle" class="dgm-label">run queue</text>
+  <text x="486" y="238" text-anchor="middle" class="dgm-sub">one notification</text>
+  <path d="M560 223h36" class="dgm-line" marker-end="url(#erl-arrow)" />
+  <rect x="598" y="194" width="148" height="58" rx="8" class="dgm-box dgm-box--accent" />
+  <text x="672" y="219" text-anchor="middle" class="dgm-label">worker poll</text>
+  <text x="672" y="238" text-anchor="middle" class="dgm-sub">Ready or Pending</text>
+  <path d="M672 252v42H114v-42" fill="none" class="dgm-line dgm-line--accent" marker-end="url(#erl-accent-arrow)" />
+  <text x="390" y="322" text-anchor="middle" class="dgm-sub dgm-sub--accent">Pending registers the next event; Ready releases the join handle</text>
+  <style>
+    .erl-arrow-accent { fill: var(--accent); }
+  </style>
+</svg>

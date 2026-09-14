@@ -1,0 +1,25 @@
+---
+---
+<svg class="dgm eddy-ownership" viewBox="0 0 860 325" role="img" aria-label="io_uring buffer ownership timeline: a future gives a Vec to an operation, the kernel owns it after submission, cancellation moves the operation to an orphan slab, and the buffer is released only after its completion queue event.">
+  <defs>
+    <marker id="eko-arrow" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 10 5 0 10z" class="dgm-arrow" /></marker>
+  </defs>
+  <text x="24" y="28" class="dgm-sub">IO_URING · THE BORROW CHECKER CANNOT SEE THE KERNEL</text>
+  <line x1="80" y1="105" x2="790" y2="105" class="dgm-line" marker-end="url(#eko-arrow)" />
+  <circle cx="120" cy="105" r="7" class="eko-dot eko-dot--accent" /><text x="120" y="75" text-anchor="middle" class="dgm-label">submit</text>
+  <circle cx="325" cy="105" r="7" class="eko-dot" /><text x="325" y="75" text-anchor="middle" class="dgm-label">poll</text>
+  <circle cx="535" cy="105" r="7" class="eko-dot eko-dot--red" /><text x="535" y="75" text-anchor="middle" class="dgm-label">drop</text>
+  <circle cx="745" cy="105" r="7" class="eko-dot eko-dot--green" /><text x="745" y="75" text-anchor="middle" class="dgm-label">CQE</text>
+  <rect x="42" y="139" width="156" height="72" rx="8" class="dgm-box dgm-box--accent" /><text x="120" y="168" text-anchor="middle" class="dgm-title">Future</text><text x="120" y="190" text-anchor="middle" class="dgm-sub">owns Vec&lt;u8&gt;</text>
+  <rect x="247" y="139" width="156" height="72" rx="8" class="dgm-box" /><text x="325" y="168" text-anchor="middle" class="dgm-title">SQE</text><text x="325" y="190" text-anchor="middle" class="dgm-sub">kernel owns bytes</text>
+  <rect x="457" y="139" width="156" height="72" rx="8" class="dgm-box" /><text x="535" y="168" text-anchor="middle" class="dgm-title">orphan slab</text><text x="535" y="190" text-anchor="middle" class="dgm-sub">buffer retained</text>
+  <rect x="667" y="139" width="156" height="72" rx="8" class="dgm-box dgm-box--accent" /><text x="745" y="168" text-anchor="middle" class="dgm-title">CQE</text><text x="745" y="190" text-anchor="middle" class="dgm-sub">return or release</text>
+  <path d="M535 212v48H325" fill="none" class="dgm-line dgm-line--accent" marker-end="url(#eko-arrow)" />
+  <text x="430" y="284" text-anchor="middle" class="dgm-sub dgm-sub--accent">cancel is a state transition, not permission to free the buffer</text>
+  <style>
+    .eko-dot { fill: var(--ink); }
+    .eko-dot--accent { fill: var(--accent); }
+    .eko-dot--red { fill: var(--accent-2); }
+    .eko-dot--green { fill: #4f8063; }
+  </style>
+</svg>

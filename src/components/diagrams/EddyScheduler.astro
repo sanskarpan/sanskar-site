@@ -1,0 +1,36 @@
+---
+---
+<svg class="dgm eddy-scheduler" viewBox="0 0 860 390" role="img" aria-label="Eddy's scheduler balances locality and fairness. A worker polls its LIFO slot and local queue, overflowing the older half to an injector. An idle worker steals half from a random victim while the injector is checked every 61 ticks.">
+  <defs>
+    <marker id="es-arrow" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 10 5 0 10z" class="dgm-arrow" /></marker>
+    <marker id="es-accent" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 10 5 0 10z" class="es-accent-fill" /></marker>
+  </defs>
+  <text x="24" y="28" class="dgm-sub">LOCALITY · FAIRNESS · PROGRESS</text>
+  <rect x="24" y="53" width="344" height="270" rx="9" class="dgm-box" />
+  <text x="46" y="82" class="dgm-title">worker 0 · owner</text>
+  <rect x="48" y="103" width="296" height="43" rx="6" class="dgm-box dgm-box--accent" />
+  <text x="196" y="130" text-anchor="middle" class="dgm-label">LIFO slot · 1 task · max 3 polls</text>
+  <rect x="48" y="163" width="296" height="82" rx="6" class="dgm-box" />
+  <text x="196" y="187" text-anchor="middle" class="dgm-label">local deque · 256 tasks</text>
+  <text x="196" y="211" text-anchor="middle" class="dgm-sub">new work enters at the tail</text>
+  <text x="196" y="231" text-anchor="middle" class="dgm-sub">owner pops; thieves steal older work</text>
+  <path d="M196 245v42" class="dgm-line dgm-line--accent" marker-end="url(#es-accent)" />
+  <text x="196" y="310" text-anchor="middle" class="dgm-sub dgm-sub--accent">full? move older half</text>
+  <path d="M368 188h94" class="dgm-line dgm-line--accent" marker-end="url(#es-accent)" />
+  <rect x="464" y="119" width="170" height="80" rx="8" class="dgm-box dgm-box--accent" />
+  <text x="549" y="147" text-anchor="middle" class="dgm-title">injector</text>
+  <text x="549" y="169" text-anchor="middle" class="dgm-sub">shared intrusive list</text>
+  <text x="549" y="187" text-anchor="middle" class="dgm-sub">global fairness check</text>
+  <text x="549" y="229" text-anchor="middle" class="dgm-sub dgm-sub--accent">every 61 ticks</text>
+  <path d="M634 159h62" class="dgm-line" marker-end="url(#es-arrow)" />
+  <rect x="698" y="91" width="138" height="136" rx="8" class="dgm-box" />
+  <text x="767" y="118" text-anchor="middle" class="dgm-title">worker 1</text>
+  <text x="767" y="142" text-anchor="middle" class="dgm-sub">idle → random</text>
+  <text x="767" y="160" text-anchor="middle" class="dgm-sub">victim</text>
+  <rect x="716" y="177" width="102" height="28" rx="5" class="dgm-box dgm-box--accent" />
+  <text x="767" y="196" text-anchor="middle" class="dgm-sub">steal half</text>
+  <path d="M767 227v55H344" fill="none" class="dgm-line dgm-line--accent" marker-end="url(#es-accent)" />
+  <text x="555" y="307" text-anchor="middle" class="dgm-sub dgm-sub--accent">no convoy: each thief starts at a different victim</text>
+  <text x="430" y="363" text-anchor="middle" class="dgm-sub">The same task can be cache-hot without letting an always-ready local queue starve injected work.</text>
+  <style>.es-accent-fill { fill: var(--accent); }</style>
+</svg>
