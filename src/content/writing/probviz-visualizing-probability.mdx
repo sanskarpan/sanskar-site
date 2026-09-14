@@ -1,6 +1,6 @@
 ---
-title: Making probability visible
-description: "Why I built probviz: a Python library and Streamlit explorer for seeing distributions, sampling from them, fitting them to data, and understanding dependence instead of memorising formulas."
+title: A probability curve is not the data
+description: "Building probviz taught me that a probability curve is only a model until samples, fits, and uncertainty put it under pressure."
 date: 2026-09-14
 updated: 2026-09-14
 tags: ['python', 'statistics', 'visualization']
@@ -14,22 +14,6 @@ import Bars from '../../components/Bars.astro';
 A probability distribution is usually introduced as a formula and remembered as a silhouette. That is a poor way to learn one. The useful question is not only “what is the density?” It is: what does the density look like, what samples does it produce, what parameters control it, and does it describe the data in front of me?
 
 I built **probviz** to keep those questions together. It is a typed Python library and a Streamlit explorer for probability distributions, sampling, fitting, dependence, Monte Carlo, and statistical tests. It is now published on [PyPI](https://pypi.org/project/probviz/), with [source on GitHub](https://github.com/sanskarpan/probviz) and [documentation on GitHub Pages](https://sanskarpan.github.io/probviz/).
-
-The shortest way to try it is deliberately short:
-
-```bash
-pip install probviz
-probviz app
-```
-
-The app starts on port `8501`. For the test extras:
-
-```bash
-pip install "probviz[test]"
-probviz test
-```
-
-That second command runs the same suite that protects the release. The current package is `probviz 1.0.3` and the suite contains 694 passing tests across Python 3.10, 3.11, and 3.12.
 
 ## Start with a shape, not a formula
 
@@ -53,11 +37,53 @@ For a normal distribution with mean <math class="equation-inline"><mi>μ</mi></m
   <span class="equation__caption">Normal density: μ controls location; σ controls spread.</span>
 </div>
 
-The point of rendering the equation as mathematics rather than putting a string of special characters in a paragraph is not decoration. Fractions, superscripts, and grouping should carry meaning at a glance. The article uses native MathML for displayed equations, with readable text alternatives for screen readers and browsers that do not expose a math layout engine.
+The equation says exactly what the animation shows: changing the spread changes both the height and width of the density while leaving its centre in place. In the API, that parameter is called `sigma`, and it must be positive.
+
+The distinction matters because this is a model, not a record of observations. A curve tells us what the model expects. A sample tells us one way reality could look under that model.
+
+## Three views of one model
+
+The app shows a probability law through three related views. For a discrete variable, a bar is a probability:
+
+<div class="equation" role="img" aria-label="The probability mass function of a discrete random variable sums to one">
+  <math display="block">
+    <msub><mi>p</mi><mi>X</mi></msub><mo>(</mo><mi>k</mi><mo>)</mo><mo>=</mo><mi>P</mi><mo>(</mo><mi>X</mi><mo>=</mo><mi>k</mi><mo>)</mo><mo>,</mo><mspace width="1em"/><mo>∑</mo><msub><mi>p</mi><mi>X</mi></msub><mo>(</mo><mi>k</mi><mo>)</mo><mo>=</mo><mn>1</mn>
+  </math>
+  <span class="equation__caption">PMF: each bar is the probability of one count.</span>
+</div>
+
+For a continuous variable, the height is density, not probability. Probability is the area under the curve:
+
+<div class="equation" role="img" aria-label="The probability over an interval is the integral of the density over that interval">
+  <math display="block">
+    <mi>P</mi><mo>(</mo><mi>a</mi><mo>≤</mo><mi>X</mi><mo>≤</mo><mi>b</mi><mo>)</mo><mo>=</mo><munderover><mo>∫</mo><mi>a</mi><mi>b</mi></munderover><msub><mi>f</mi><mi>X</mi></msub><mo>(</mo><mi>x</mi><mo>)</mo><mi>d</mi><mi>x</mi>
+  </math>
+  <span class="equation__caption">PDF: the area over an interval is probability; the curve height is density.</span>
+</div>
+
+Both views connect to the cumulative distribution function and its quantile operation:
+
+<div class="equation" role="img" aria-label="The CDF is the probability that X is at most x, and the quantile function returns a value at a requested cumulative probability">
+  <math display="block">
+    <msub><mi>F</mi><mi>X</mi></msub><mo>(</mo><mi>x</mi><mo>)</mo><mo>=</mo><mi>P</mi><mo>(</mo><mi>X</mi><mo>≤</mo><mi>x</mi><mo>)</mo><mo>,</mo><mspace width="1em"/><msup><msub><mi>F</mi><mi>X</mi></msub><mrow><mo>−</mo><mn>1</mn></mrow></msup><mo>(</mo><mi>q</mi><mo>)</mo><mo>=</mo><mi>ppf</mi><mo>(</mo><mi>q</mi><mo>)</mo>
+  </math>
+  <span class="equation__caption">CDF answers “how much is below x?”; PPF answers “which x contains q of the mass?”</span>
+</div>
+
+That maps directly to the library:
+
+| Mathematical view | probviz operation |
+|---|---|
+| Density or mass | `distribution.pdf(x)` |
+| Cumulative probability | `distribution.cdf(x)` |
+| Quantile | `distribution.ppf(q)` |
+| Draws from the model | `distribution.rvs(...)` |
+
+For a normal distribution, `cdf(1.96)` is approximately `0.975`. For a discrete distribution such as Binomial, `pdf(5)` is the probability of exactly five successes. The same public method is convenient; the interpretation is different.
 
 ## Sixteen distributions, one contract
 
-The library starts with 16 univariate distributions: 10 continuous and 6 discrete. Each is a small validated wrapper around a frozen SciPy distribution. The wrapper gives them the same useful vocabulary: `pdf`, `cdf`, `ppf`, `rvs`, `mean`, `var`, `median`, `mode`, `entropy`, `support`, and `interval`.
+The library starts with 16 univariate distributions: 10 continuous and 6 discrete. Each is a small validated wrapper around a frozen SciPy distribution. The wrapper gives them the same useful vocabulary: `pdf`, `cdf`, `ppf`, `rvs`, `mean`, `var`, `std`, `median`, `mode`, `skewness`, `kurtosis`, `entropy`, `get_support()`, and `interval`.
 
 ```python
 from src.distributions.continuous import NormalDistribution
@@ -118,7 +144,7 @@ print(sample.mean())
 print(gamma.mean())
 ```
 
-The `random_state` belongs to the call. Sampling one distribution should not silently reseed a different part of a notebook or test process. That local-RNG rule was one of the changes made during the production audit: copulas, mixture fitting, and multivariate samplers use local generators rather than mutating NumPy's global random state.
+The `random_state` belongs to the call. Sampling one distribution should not silently reseed a different part of a notebook or test process. That explicit-seed rule was one of the changes made during the production audit: the public samplers and fitting paths accept a seed where they control randomness, while arbitrary callables remain responsible for their own generator.
 
 ## Dependence is invisible in a marginal
 
@@ -149,7 +175,7 @@ from src.distributions.copulas import GaussianCopula
 correlation = np.array([[1.0, 0.75], [0.75, 1.0]])
 copula = GaussianCopula(correlation=correlation)
 
-u = copula.rvs(n_samples=2_000, random_state=0)
+u = copula.rvs(size=2_000, random_state=0)
 print(u.shape)
 print(u.min(), u.max())
 ```
@@ -174,7 +200,7 @@ If a dataset contains two populations, fitting one normal distribution can hide 
   <img class="probviz-gif" src="/probviz/mixture_separation.gif" alt="Animated Gaussian mixture components separating into two peaks" width="720" height="405" loading="lazy" />
 </Figure>
 
-The implementation includes a one-dimensional EM fitter, a scikit-learn Gaussian-mixture wrapper, Bayesian GMM, and BIC-based component selection. The EM implementation is guarded at the places where numerical examples usually become production bugs: empty data, too many components, zero row likelihoods, zero component counts, and zero variance. Most importantly, convergence is checked after the M-step, so the returned parameters describe the likelihood value that actually converged.
+The implementation includes a one-dimensional EM fitter, a scikit-learn Gaussian-mixture wrapper, Bayesian GMM, and BIC-based component selection. The EM implementation is guarded at the places where numerical examples usually become production bugs: empty data, too many components, zero row likelihoods, zero component counts, and zero variance. The fitter evaluates convergence after updating the parameters, so its stopping decision corresponds to the latest M-step rather than the previous iteration.
 
 ```python
 import numpy as np
@@ -213,6 +239,8 @@ print(best_result["aic"], best_result["bic"])
 
 The output is a regular dictionary instead of an opaque library-specific result object. That makes it easy to log, serialize, compare, or put behind an API. `BayesianEstimator` adds conjugate updates for normal means and variances, Poisson rates, and Bernoulli probabilities. `GoodnessOfFit` wraps chi-square, KS, Anderson-Darling, Shapiro-Wilk, and Jarque-Bera tests.
 
+The important word in “best fit” is best among the candidates tested. AIC and BIC compare those candidates; they do not prove that the winning distribution generated the data. A KS statistic is a distance between an empirical and fitted CDF; it is not a certificate that the model is true. The useful workflow is to inspect the fit, plot the residual disagreement, and ask what data-generating process could make the mismatch.
+
 ## Monte Carlo is an uncertainty tool
 
 Monte Carlo is often introduced as “draw many samples and average them.” The average is only half the answer. The other half is how uncertain that estimate is and how quickly it stabilises. `MonteCarloSimulator` returns samples, summary statistics, quantiles, a confidence interval, and optional convergence data. Its probability estimator uses a Wilson interval rather than a symmetric interval that can wander below zero or above one.
@@ -230,11 +258,13 @@ The library also includes importance sampling, stratified sampling, bootstrap, p
 </div>
 
 ```python
+import numpy as np
 from src.monte_carlo.simulator import MonteCarloSimulator
 
+rng = np.random.default_rng(0)
 simulator = MonteCarloSimulator(random_seed=0)
 result = simulator.simulate(
-    lambda: np.random.normal(),
+    lambda: rng.normal(),
     num_samples=10_000,
     track_convergence=True,
 )
@@ -243,7 +273,7 @@ print(result.mean)
 print(result.confidence_interval)
 ```
 
-The private `_rng` in that small example is only there to make the source of randomness explicit. In application code, pass a public random function or distribution sampler. The important point is that an estimate should arrive with its uncertainty, not just a number with too many decimal places.
+The simulator's seed is stored on the simulator, but `simulate()` calls an arbitrary function; that function still owns its random state. Creating a generator outside the callable makes the dependency explicit and avoids coupling a notebook to NumPy's global RNG. The returned interval is an empirical percentile interval for the generated values; `estimate_probability()` separately uses a Wilson interval for a binomial proportion. The important point is that an estimate should arrive with uncertainty, not just a number with too many decimal places.
 
 ## The app is a laboratory, not a dashboard
 
@@ -267,11 +297,17 @@ fig, ax = plot_comparison([normal, NormalDistribution(mu=1, sigma=0.8)])
 
 No helper calls `plt.show()`. You can embed the returned figure, add annotations, save it, or close it when a web request is finished.
 
+## The failures are part of the design
+
+A probability library can produce an attractive wrong answer. That became clear during the production audit. A random mixture fit can change its component labels between runs. An EM iteration can create a zero standard deviation. A copula method can be mathematically defined only in two dimensions, while its input looks general enough to suggest otherwise. A missing guard in any of those places would leave the plot looking reasonable and the result difficult to trust.
+
+The implementation responds by making assumptions executable: random-state arguments are passed into samplers and fitters; empty data, too many components, zero likelihoods, and zero variances are checked; unsupported Student-t copula density and CDF operations raise an explicit `NotImplementedError`; and tests cover the numerical boundary cases as well as the happy path. These are not separate from the visual design. They are what stop an interactive experiment from turning a bug into a lesson.
+
 ## Quality is part of the feature
 
 The project began as a visual experiment and ended with the quality gates of a library. The release is built as a wheel and source distribution. The CLI is `probviz app`, `probviz test`, and `probviz version`. The package ships `src`, `web`, and `tests`, so an installed copy can run its own suite when the test extras are installed.
 
-<Bars label="Fig 6" caption="The release is tested across the places where probability code tends to break: distribution semantics, numerical utilities, plots, statistical results, and multivariate behavior. The full suite contains 694 passing tests." bars={[
+<Bars label="Fig 6" caption="Selected coverage areas in the release suite. The displayed categories are not intended to sum to the full 694 tests." bars={[
   { label: "distributions", value: 144, display: "144" },
   { label: "utils", value: 117, display: "117" },
   { label: "plotting", value: 86, display: "86" },
@@ -333,6 +369,10 @@ probviz test
 
 The project is not a replacement for SciPy, and the Streamlit page is not a general-purpose statistical workbench. It is a coherent surface over a set of probability ideas that are usually separated: distributions, dependence, samples, fitting, uncertainty, and tests. Its value is the connection between them.
 
-The thesis is simple: a distribution should be something you can see, perturb, sample from, fit, and question. That is what I tried to make `probviz` — a library you can import, an app you can drag, and a set of figures that make the mathematics harder to misunderstand.
+The thesis is simple: a distribution should be something you can see, perturb, sample from, fit, and question. That is what I tried to make `probviz` - a library you can import, an app you can drag, and a set of figures that make the mathematics harder to misunderstand.
+
+## Further reading
+
+The implementation builds on [SciPy's statistical distributions](https://docs.scipy.org/doc/scipy/reference/stats.html). For an interactive introduction to probability concepts, [Seeing Theory](https://seeing-theory.brown.edu/) is excellent. The [NIST/SEMATECH e-Handbook](https://www.itl.nist.gov/div898/handbook/) is a useful reference for distribution fitting, goodness-of-fit, and statistical practice.
 
 The [package is on PyPI](https://pypi.org/project/probviz/), the [source is on GitHub](https://github.com/sanskarpan/probviz), and the [API documentation is live](https://sanskarpan.github.io/probviz/). Start with `pip install probviz`, move a slider, and see whether the picture agrees with the formula.
